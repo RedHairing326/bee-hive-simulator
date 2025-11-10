@@ -19,6 +19,19 @@ export class Hive {
         this.optimalTemperature = 35;
         this.deadBeeLocations = []; // Track where dead bees are
         
+        // Daily summary tracking
+        this.dailySummaries = []; // Array of daily summary objects
+        this.currentDaySummary = {
+            date: new Date(this.currentDate),
+            eggsLaid: 0,
+            beesHatched: 0,
+            beesDied: 0,
+            nectarCollected: 0,
+            pollenCollected: 0,
+            waterCollected: 0
+        };
+        this.lastSummaryDay = this.currentDate.getDate();
+        
         this.initializeCells();
         this.initializeEntrances();
         this.initializeBees();
@@ -414,6 +427,9 @@ export class Hive {
         this.currentDate = currentDate;
         this.simulationTime += deltaTime;
         
+        // Check if a new day has started (for daily summaries)
+        this.checkDayRollover(currentDate);
+        
         // Update all cells - reset occupation
         for (const cell of this.cells.values()) {
             cell.occupyingBees = []; // Reset occupation array
@@ -456,6 +472,9 @@ export class Hive {
             const result = bee.update(deltaTime, this);
             
             if (result === 'died') {
+                // Track bee death in daily summary
+                this.recordBeeDied();
+                
                 // Mark location where bee died (always mark it)
                 const cell = this.getCell(bee.q, bee.r);
                 if (cell && !bee.isOutsideHive) {
@@ -545,6 +564,9 @@ export class Hive {
             const worker = new Bee(BeeType.WORKER, cell.q, cell.r, this.config);
             this.bees.push(worker);
         }
+        
+        // Track bee hatching in daily summary
+        this.recordBeeHatched();
         
         // Clear the cell
         cell.state = CellState.EMPTY;
@@ -673,6 +695,56 @@ export class Hive {
         this.foragingHistory = this.foragingHistory.filter(t => t > oneHourAgo);
     }
     
+    // Daily summary tracking methods
+    recordEggLaid() {
+        this.currentDaySummary.eggsLaid++;
+    }
+    
+    recordBeeHatched() {
+        this.currentDaySummary.beesHatched++;
+    }
+    
+    recordBeeDied() {
+        this.currentDaySummary.beesDied++;
+    }
+    
+    recordNectarCollected(amount = 1) {
+        this.currentDaySummary.nectarCollected += amount;
+    }
+    
+    recordPollenCollected(amount = 1) {
+        this.currentDaySummary.pollenCollected += amount;
+    }
+    
+    recordWaterCollected(amount = 1) {
+        this.currentDaySummary.waterCollected += amount;
+    }
+    
+    checkDayRollover(currentDate) {
+        const currentDay = currentDate.getDate();
+        if (currentDay !== this.lastSummaryDay) {
+            // New day started, finalize previous day's summary
+            this.dailySummaries.push({...this.currentDaySummary});
+            
+            // Keep only last 7 days
+            if (this.dailySummaries.length > 7) {
+                this.dailySummaries.shift();
+            }
+            
+            // Start new day summary
+            this.currentDaySummary = {
+                date: new Date(currentDate),
+                eggsLaid: 0,
+                beesHatched: 0,
+                beesDied: 0,
+                nectarCollected: 0,
+                pollenCollected: 0,
+                waterCollected: 0
+            };
+            this.lastSummaryDay = currentDay;
+        }
+    }
+    
     getStats() {
         let workerCount = 0;
         let broodCount = 0;
@@ -745,7 +817,9 @@ export class Hive {
             queenMaxAge: queenMaxAge,
             queenEggsTotal: queenEggsTotal,
             queenEggsHour: queenEggsHour,
-            queenTask: queenTask
+            queenTask: queenTask,
+            currentDaySummary: this.currentDaySummary,
+            dailySummaries: this.dailySummaries
         };
     }
     

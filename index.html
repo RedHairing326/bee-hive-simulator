@@ -100,6 +100,65 @@
         .panel.pinned .pin-btn {
             opacity: 1;
         }
+        
+        .speed-preset-btn {
+            background: rgba(100, 100, 100, 0.5);
+            color: white;
+            border: 1px solid rgba(200, 200, 200, 0.3);
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+            transition: all 0.2s;
+            flex: 1;
+            min-width: 50px;
+        }
+        
+        .speed-preset-btn:hover {
+            background: rgba(150, 150, 150, 0.7);
+            transform: translateY(-1px);
+        }
+        
+        .speed-preset-btn:active {
+            transform: translateY(0);
+        }
+        
+        .speed-preset-btn.active {
+            background: rgba(100, 200, 100, 0.7);
+            border-color: rgba(100, 255, 100, 0.5);
+        }
+        
+        .toggle-btn {
+            width: 100%;
+            background: rgba(100, 100, 100, 0.5);
+            color: white;
+            border: 1px solid rgba(200, 200, 200, 0.3);
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        
+        .toggle-btn:hover {
+            background: rgba(150, 150, 150, 0.7);
+        }
+        
+        .toggle-btn.active {
+            background: rgba(100, 150, 255, 0.7);
+            border-color: rgba(100, 200, 255, 0.5);
+        }
+        
+        #colorblind-status {
+            color: rgba(255, 255, 255, 0.8);
+        }
+        
+        .toggle-btn.active #colorblind-status {
+            color: rgba(200, 255, 200, 1);
+            font-weight: bold;
+        }
 
         /* Touch-friendly improvements */
         @media (hover: none) and (pointer: coarse) {
@@ -420,6 +479,127 @@
             font-weight: 600;
             margin-left: 10px;
         }
+        
+        /* Mobile Layout - Stack panels vertically */
+        @media (max-width: 768px) {
+            .panel {
+                max-width: 90vw !important;
+                width: 90vw !important;
+            }
+            
+            #hud {
+                top: 10px;
+                left: 50%;
+                transform: translateX(-50%);
+                min-width: 90vw;
+            }
+            
+            #hud.collapsed {
+                transform: translateX(-50%) translateY(-110%);
+                opacity: 0.3;
+            }
+            
+            #hud.collapsed:hover,
+            #hud.collapsed:active {
+                opacity: 1;
+            }
+            
+            #controls {
+                bottom: auto;
+                top: auto;
+                right: 50%;
+                left: 50%;
+                transform: translateX(-50%);
+                min-width: 90vw;
+                max-width: 90vw;
+            }
+            
+            #controls.collapsed {
+                bottom: 10px;
+                transform: translateX(-50%) translateY(110%);
+            }
+            
+            #legend {
+                right: 50%;
+                transform: translateX(50%);
+                min-width: 90vw;
+                max-width: 90vw;
+                bottom: auto;
+            }
+            
+            #legend.collapsed {
+                transform: translateX(50%) translateY(110%);
+            }
+            
+            /* Position panel tabs for mobile */
+            #hud-tab {
+                top: 0;
+                left: 50%;
+                transform: translateX(-50%);
+                border-radius: 0 0 8px 8px;
+                border-top: none;
+            }
+            
+            #controls-tab {
+                bottom: 0;
+                right: 50%;
+                left: auto;
+                transform: translateX(50%);
+                border-radius: 8px 8px 0 0;
+                border-bottom: none;
+            }
+            
+            #legend-tab {
+                bottom: 60px;
+                right: 50%;
+                left: auto;
+                transform: translateX(50%);
+                border-radius: 8px 8px 0 0;
+                border-bottom: none;
+            }
+            
+            .panel-tab {
+                min-width: 80px;
+                padding: 8px 12px;
+            }
+            
+            /* Improve controls on mobile */
+            .control-group {
+                margin: 8px 0;
+            }
+            
+            .speed-preset-btn {
+                font-size: 14px;
+                padding: 8px 10px;
+                min-width: 60px;
+            }
+            
+            .toggle-btn {
+                font-size: 14px;
+                padding: 12px 15px;
+            }
+            
+            /* Better stats display */
+            .stat {
+                font-size: 13px;
+            }
+            
+            .stat-label {
+                font-size: 12px;
+            }
+            
+            /* Legend improvements */
+            .legend-item {
+                font-size: 13px;
+                padding: 6px 0;
+            }
+            
+            .legend-color {
+                width: 20px;
+                height: 20px;
+                min-width: 20px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -503,6 +683,33 @@
             <span class="stat-label">Current Task:</span>
             <span id="stat-queen-task">---</span>
         </div>
+        
+        <h3 style="margin-top: 15px;">📊 Today's Summary</h3>
+        <div class="stat">
+            <span class="stat-label">Eggs Laid:</span>
+            <span id="stat-today-eggs">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Bees Hatched:</span>
+            <span id="stat-today-hatched">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Bees Died:</span>
+            <span id="stat-today-died">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Nectar:</span>
+            <span id="stat-today-nectar">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Pollen:</span>
+            <span id="stat-today-pollen">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Water:</span>
+            <span id="stat-today-water">---</span>
+        </div>
+        
         <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid rgba(128, 128, 128, 0.3); font-size: 0.9em; opacity: 0.7; text-align: center;">
             Version <span id="stat-version">---</span>
         </div>
@@ -518,9 +725,20 @@
             <label>Time Multiplier: <span id="multiplier-value">1</span>x</label>
             <input type="range" id="time-multiplier" min="1" max="1000" value="1" step="1">
         </div>
+        <div class="control-group" style="display: flex; gap: 5px; flex-wrap: wrap; margin-top: 10px;">
+            <button class="speed-preset-btn" data-speed="1">1x</button>
+            <button class="speed-preset-btn" data-speed="10">10x</button>
+            <button class="speed-preset-btn" data-speed="100">100x</button>
+            <button class="speed-preset-btn" data-speed="1000">1000x</button>
+        </div>
         <div class="control-group">
             <label>Start Time:</label>
             <input type="datetime-local" id="start-time">
+        </div>
+        <div class="control-group" style="margin-top: 10px;">
+            <button id="colorblind-toggle" class="toggle-btn">
+                <span id="colorblind-icon">👁️</span> Color Blind Mode: <span id="colorblind-status">OFF</span>
+            </button>
         </div>
     </div>
 

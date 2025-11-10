@@ -23,6 +23,10 @@ class BeeHiveSimulator {
         // Load configuration
         await this.loadConfig();
         
+        // Detect mobile and apply mobile settings
+        this.isMobile = this.detectMobile();
+        this.applyMobileSettings();
+        
         // Setup canvas
         this.canvas = document.getElementById('hiveCanvas');
         
@@ -36,6 +40,9 @@ class BeeHiveSimulator {
         // Setup window resize handler
         this.setupResizeHandler();
         
+        // Setup orientation change handler
+        this.setupOrientationHandler();
+        
         // Set initial time
         if (this.config.ui.useCurrentTime) {
             this.simulationDate = new Date();
@@ -45,6 +52,36 @@ class BeeHiveSimulator {
         this.running = true;
         this.lastTimestamp = performance.now();
         requestAnimationFrame((t) => this.gameLoop(t));
+    }
+    
+    detectMobile() {
+        // Comprehensive mobile detection
+        const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+        
+        // Check for mobile devices
+        const isMobileDevice = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent.toLowerCase());
+        
+        // Check for touch support and small screen
+        const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+        const isSmallScreen = window.innerWidth <= 768;
+        
+        return isMobileDevice || (isTouchDevice && isSmallScreen);
+    }
+    
+    applyMobileSettings() {
+        if (this.isMobile && this.config.grid.mobile) {
+            // Apply mobile grid configuration
+            this.config.grid.columns = this.config.grid.mobile.columns;
+            this.config.grid.rows = this.config.grid.mobile.rows;
+            this.config.grid.hexSize = this.config.grid.mobile.hexSize;
+            
+            // Apply mobile UI configuration
+            if (this.config.ui.mobile) {
+                this.config.ui.targetFPS = this.config.ui.mobile.targetFPS;
+            }
+            
+            console.log('Mobile mode enabled:', this.config.grid);
+        }
     }
     
     setupResizeHandler() {
@@ -59,6 +96,32 @@ class BeeHiveSimulator {
                 }
             }, 250);
         });
+    }
+    
+    setupOrientationHandler() {
+        // Handle orientation changes on mobile
+        if (this.isMobile) {
+            window.addEventListener('orientationchange', () => {
+                setTimeout(() => {
+                    if (this.renderer) {
+                        this.renderer.resize();
+                        this.renderer.render(this.hive);
+                    }
+                }, 100);
+            });
+            
+            // Also listen to screen orientation API if available
+            if (screen.orientation) {
+                screen.orientation.addEventListener('change', () => {
+                    setTimeout(() => {
+                        if (this.renderer) {
+                            this.renderer.resize();
+                            this.renderer.render(this.hive);
+                        }
+                    }, 100);
+                });
+            }
+        }
     }
     
     setupCollapsiblePanels() {
@@ -206,6 +269,74 @@ class BeeHiveSimulator {
         
         // Setup cell hover tooltip
         this.setupCellTooltip();
+        this.setupTouchGestures();
+    }
+    
+    setupTouchGestures() {
+        if (!this.isMobile) return;
+        
+        const canvas = document.getElementById('hiveCanvas');
+        if (!canvas) return;
+        
+        let lastTap = 0;
+        let tapCount = 0;
+        const DOUBLE_TAP_DELAY = 300; // milliseconds
+        
+        canvas.addEventListener('touchend', (e) => {
+            const currentTime = new Date().getTime();
+            const tapLength = currentTime - lastTap;
+            
+            if (tapLength < DOUBLE_TAP_DELAY && tapLength > 0) {
+                // Double tap detected
+                e.preventDefault();
+                
+                // Haptic feedback if supported
+                if (navigator.vibrate && this.config.ui.mobile?.enableHapticFeedback) {
+                    navigator.vibrate(30);
+                }
+                
+                // Reset viewport zoom (if you've implemented pan/zoom)
+                // For now, we'll just collapse all panels
+                const panels = document.querySelectorAll('.panel:not(.pinned)');
+                panels.forEach(panel => {
+                    panel.classList.add('collapsed');
+                });
+                
+                // Update tab visibility
+                this.updateAllTabVisibility();
+            }
+            
+            lastTap = currentTime;
+        });
+        
+        // Prevent unwanted zoom gestures on the canvas
+        canvas.addEventListener('gesturestart', (e) => {
+            e.preventDefault();
+        });
+        
+        canvas.addEventListener('gesturechange', (e) => {
+            e.preventDefault();
+        });
+        
+        canvas.addEventListener('gestureend', (e) => {
+            e.preventDefault();
+        });
+    }
+    
+    updateAllTabVisibility() {
+        const panels = document.querySelectorAll('.panel');
+        panels.forEach(panel => {
+            const panelId = panel.id;
+            const tab = document.getElementById(`${panelId}-tab`);
+            
+            if (tab) {
+                if (!panel.classList.contains('collapsed') || panel.classList.contains('pinned')) {
+                    tab.classList.add('hidden');
+                } else {
+                    tab.classList.remove('hidden');
+                }
+            }
+        });
     }
     
     setupCellTooltip() {
@@ -258,15 +389,61 @@ class BeeHiveSimulator {
             tooltip.classList.remove('visible');
         });
         
-        // Touch events
+        // Touch events with long-press support
+        let touchStartTime = 0;
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let longPressTimer = null;
+        const LONG_PRESS_DURATION = 500; // milliseconds
+        const MOVE_THRESHOLD = 10; // pixels
+        
+        canvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length > 0) {
+                const touch = e.touches[0];
+                touchStartTime = Date.now();
+                touchStartX = touch.clientX;
+                touchStartY = touch.clientY;
+                
+                // Start long-press timer
+                longPressTimer = setTimeout(() => {
+                    // Long press detected - show tooltip
+                    handlePointerMove(touch.clientX, touch.clientY);
+                    // Vibrate if supported (optional feedback)
+                    if (navigator.vibrate) {
+                        navigator.vibrate(50);
+                    }
+                }, LONG_PRESS_DURATION);
+            }
+        }, { passive: true });
+        
         canvas.addEventListener('touchmove', (e) => {
             if (e.touches.length > 0) {
                 const touch = e.touches[0];
-                handlePointerMove(touch.clientX, touch.clientY);
+                
+                // Check if finger moved too much (cancel long-press)
+                const moveX = Math.abs(touch.clientX - touchStartX);
+                const moveY = Math.abs(touch.clientY - touchStartY);
+                if (moveX > MOVE_THRESHOLD || moveY > MOVE_THRESHOLD) {
+                    if (longPressTimer) {
+                        clearTimeout(longPressTimer);
+                        longPressTimer = null;
+                    }
+                }
+                
+                // Still update tooltip if already visible
+                if (tooltip.classList.contains('visible')) {
+                    handlePointerMove(touch.clientX, touch.clientY);
+                }
             }
         }, { passive: true });
         
         canvas.addEventListener('touchend', () => {
+            // Clear long-press timer
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+            
             // Hide tooltip shortly after touch ends
             setTimeout(() => {
                 tooltip.classList.remove('visible');
@@ -420,10 +597,71 @@ class BeeHiveSimulator {
         try {
             const response = await fetch('config.json');
             this.config = await response.json();
+            
+            // Store original colors for toggling
+            this.originalColors = {
+                cellStates: {...this.config.colors.cellStates},
+                bees: {...this.config.colors.bees},
+                borders: {...this.config.colors.borders}
+            };
+            
+            // Apply color blind mode if enabled
+            if (this.config.ui.colorBlindMode && this.config.colors.colorBlindPalette) {
+                this.applyColorBlindPalette();
+            }
         } catch (error) {
             console.error('Failed to load config.json:', error);
             // Use default config if file doesn't exist
             this.config = this.getDefaultConfig();
+        }
+    }
+    
+    applyColorBlindPalette() {
+        // Replace main color palettes with color blind friendly versions
+        if (this.config.colors.colorBlindPalette) {
+            this.config.colors.cellStates = {...this.config.colors.colorBlindPalette.cellStates};
+            this.config.colors.bees = {...this.config.colors.colorBlindPalette.bees};
+            this.config.colors.borders = {...this.config.colors.colorBlindPalette.borders};
+        }
+    }
+    
+    restoreOriginalColors() {
+        // Restore original color palette
+        if (this.originalColors) {
+            this.config.colors.cellStates = {...this.originalColors.cellStates};
+            this.config.colors.bees = {...this.originalColors.bees};
+            this.config.colors.borders = {...this.originalColors.borders};
+        }
+    }
+    
+    toggleColorBlindMode() {
+        if (this.colorBlindMode) {
+            this.applyColorBlindPalette();
+        } else {
+            this.restoreOriginalColors();
+        }
+        
+        // Update button appearance
+        this.updateColorBlindButton();
+        
+        // Force re-render to apply new colors
+        if (this.renderer && this.hive) {
+            this.renderer.render(this.hive);
+        }
+    }
+    
+    updateColorBlindButton() {
+        const colorblindToggle = document.getElementById('colorblind-toggle');
+        const colorblindStatus = document.getElementById('colorblind-status');
+        
+        if (colorblindToggle && colorblindStatus) {
+            if (this.colorBlindMode) {
+                colorblindToggle.classList.add('active');
+                colorblindStatus.textContent = 'ON';
+            } else {
+                colorblindToggle.classList.remove('active');
+                colorblindStatus.textContent = 'OFF';
+            }
         }
     }
     
@@ -534,8 +772,34 @@ class BeeHiveSimulator {
             multiplierSlider.addEventListener('input', (e) => {
                 this.timeMultiplier = parseFloat(e.target.value);
                 multiplierValue.textContent = this.timeMultiplier;
+                this.updateSpeedPresetButtons();
             });
         }
+        
+        // Setup speed preset buttons
+        const presetButtons = document.querySelectorAll('.speed-preset-btn');
+        presetButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const speed = parseFloat(btn.dataset.speed);
+                this.timeMultiplier = speed;
+                multiplierSlider.value = speed;
+                multiplierValue.textContent = speed;
+                this.updateSpeedPresetButtons();
+            });
+            
+            // Touch support
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                const speed = parseFloat(btn.dataset.speed);
+                this.timeMultiplier = speed;
+                multiplierSlider.value = speed;
+                multiplierValue.textContent = speed;
+                this.updateSpeedPresetButtons();
+            });
+        });
+        
+        // Initial active state
+        this.updateSpeedPresetButtons();
         
         // Setup start time picker
         const startTimePicker = document.getElementById('start-time');
@@ -577,6 +841,29 @@ class BeeHiveSimulator {
             });
         }
         
+        // Setup color blind mode toggle
+        const colorblindToggle = document.getElementById('colorblind-toggle');
+        const colorblindStatus = document.getElementById('colorblind-status');
+        
+        if (colorblindToggle) {
+            // Set initial state
+            this.colorBlindMode = this.config.ui.colorBlindMode || false;
+            this.updateColorBlindButton();
+            
+            // Click handler
+            colorblindToggle.addEventListener('click', () => {
+                this.colorBlindMode = !this.colorBlindMode;
+                this.toggleColorBlindMode();
+            });
+            
+            // Touch support
+            colorblindToggle.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                this.colorBlindMode = !this.colorBlindMode;
+                this.toggleColorBlindMode();
+            });
+        }
+        
         // Update theme based on time
         this.updateTheme();
     }
@@ -605,6 +892,16 @@ class BeeHiveSimulator {
     gameLoop(timestamp) {
         if (!this.running) return;
         
+        // FPS throttling for mobile optimization
+        const targetFPS = this.config.ui.targetFPS || 60;
+        const targetFrameTime = 1000 / targetFPS;
+        
+        if (!this.lastRenderTime) {
+            this.lastRenderTime = timestamp;
+        }
+        
+        const timeSinceLastRender = timestamp - this.lastRenderTime;
+        
         const deltaTime = (timestamp - this.lastTimestamp) / 1000; // Convert to seconds
         this.lastTimestamp = timestamp;
         
@@ -623,17 +920,22 @@ class BeeHiveSimulator {
         const simulationMilliseconds = simulationDelta * 1000;
         this.simulationDate = new Date(this.simulationDate.getTime() + simulationMilliseconds);
         
-        // Update hive
+        // Always update hive logic
         this.hive.update(simulationDelta, this.simulationDate);
         
-        // Render
-        this.renderer.render(this.hive);
-        
-        // Update HUD
-        this.updateHUD();
-        
-        // Update theme
-        this.updateTheme();
+        // Only render at target FPS
+        if (timeSinceLastRender >= targetFrameTime) {
+            this.lastRenderTime = timestamp;
+            
+            // Render
+            this.renderer.render(this.hive);
+            
+            // Update HUD
+            this.updateHUD();
+            
+            // Update theme
+            this.updateTheme();
+        }
         
         // Continue loop
         requestAnimationFrame((t) => this.gameLoop(t));
@@ -693,8 +995,30 @@ class BeeHiveSimulator {
             document.getElementById('stat-queen-task').textContent = '---';
         }
         
+        // Display today's summary
+        if (stats.currentDaySummary) {
+            document.getElementById('stat-today-eggs').textContent = stats.currentDaySummary.eggsLaid;
+            document.getElementById('stat-today-hatched').textContent = stats.currentDaySummary.beesHatched;
+            document.getElementById('stat-today-died').textContent = stats.currentDaySummary.beesDied;
+            document.getElementById('stat-today-nectar').textContent = stats.currentDaySummary.nectarCollected;
+            document.getElementById('stat-today-pollen').textContent = stats.currentDaySummary.pollenCollected;
+            document.getElementById('stat-today-water').textContent = stats.currentDaySummary.waterCollected;
+        }
+        
         // Display version
         document.getElementById('stat-version').textContent = this.config.version || '1.0.0';
+    }
+    
+    updateSpeedPresetButtons() {
+        const presetButtons = document.querySelectorAll('.speed-preset-btn');
+        presetButtons.forEach(btn => {
+            const speed = parseFloat(btn.dataset.speed);
+            if (speed === this.timeMultiplier) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
     }
 }
 

@@ -1,12 +1,17 @@
 {
-  "version": "1.1.0",
+  "version": "1.3.0",
   "grid": {
     "columns": 72,
     "rows": 24,
     "hexSize": 20,
     "offsetEvenRows": true,
     "entranceSide": "bottom",
-    "entranceCount": 3
+    "entranceCount": 3,
+    "mobile": {
+      "columns": 24,
+      "rows": 16,
+      "hexSize": 15
+    }
   },
   "colors": {
     "cellStates": {
@@ -37,6 +42,33 @@
     "background": {
       "cellFillLight": "#F5F5DC",
       "cellFillDark": "#2A2A2A"
+    },
+    "colorBlindPalette": {
+      "cellStates": {
+        "empty": "#E0E0E0",
+        "egg": "#FFFFFF",
+        "larvaeHungry": "#FFEB99",
+        "larvaeFed": "#FFD966",
+        "cappedBrood": "#B8860B",
+        "nectar": "#87CEEB",
+        "honey": "#FFD700",
+        "honeyComplete": "#FFA500",
+        "honeyCapped": "#FF8C00",
+        "pollen": "#8B4513",
+        "beeBread": "#6B3410",
+        "water": "#4169E1"
+      },
+      "bees": {
+        "queen": "#FF1493",
+        "workerYoung": "#0066CC",
+        "workerMiddle": "#004C99",
+        "workerOld": "#003366",
+        "workerVeryOld": "#668899"
+      },
+      "borders": {
+        "default": "#4A4A4A",
+        "highlight": "#FFD700"
+      }
     }
   },
   "simulation": {
@@ -102,7 +134,14 @@
     "showLegend": true,
     "defaultTimeMultiplier": 1,
     "maxTimeMultiplier": 1000,
-    "useCurrentTime": true
+    "useCurrentTime": true,
+    "targetFPS": 30,
+    "colorBlindMode": false,
+    "mobile": {
+      "targetFPS": 20,
+      "autoCollapseDelay": 5000,
+      "enableHapticFeedback": true
+    }
   },
   "advanced": {
     "pathfindingEnabled": true,

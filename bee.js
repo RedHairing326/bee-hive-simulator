@@ -619,6 +619,7 @@ export class Bee {
                 // Track egg laid
                 this.eggsLaidTotal++;
                 this.eggsLaidHistory.push(this.simulationTime);
+                hive.recordEggLaid();
                 
                 // Keep only last hour of history (3600 seconds)
                 const oneHourAgo = this.simulationTime - 3600;
@@ -870,11 +871,15 @@ export class Bee {
                 if (cell) {
                     if (this.hasNectar) {
                         // Each foraging trip brings back 3-5 units
-                        cell.addNectar(3 + Math.floor(Math.random() * 3));
+                        const amount = 3 + Math.floor(Math.random() * 3);
+                        cell.addNectar(amount);
+                        hive.recordNectarCollected(amount);
                     }
                     if (this.hasPollen) {
                         // Each foraging trip brings back 3-5 units
-                        cell.addPollen(3 + Math.floor(Math.random() * 3));
+                        const amount = 3 + Math.floor(Math.random() * 3);
+                        cell.addPollen(amount);
+                        hive.recordPollenCollected(amount);
                     }
                 }
                 this.hasNectar = false;
@@ -935,14 +940,19 @@ export class Bee {
             if (cell) {
                 if (this.hasNectar) {
                     // Each foraging trip brings back 3-5 units
-                    cell.addNectar(3 + Math.floor(Math.random() * 3));
+                    const amount = 3 + Math.floor(Math.random() * 3);
+                    cell.addNectar(amount);
+                    hive.recordNectarCollected(amount);
                 }
                 if (this.hasPollen) {
                     // Each foraging trip brings back 3-5 units
-                    cell.addPollen(3 + Math.floor(Math.random() * 3));
+                    const amount = 3 + Math.floor(Math.random() * 3);
+                    cell.addPollen(amount);
+                    hive.recordPollenCollected(amount);
                 }
                 if (this.hasWater) {
                     cell.addWater(1);
+                    hive.recordWaterCollected(1);
                 }
             }
             this.hasNectar = false;
