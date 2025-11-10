@@ -112,12 +112,14 @@ class BeeHiveSimulator {
             
             // Touch to expand (only if not pinned)
             panel.addEventListener('touchstart', (e) => {
+                // Stop propagation to prevent document-level touch handler from closing it
+                e.stopPropagation();
                 if (!panel.classList.contains('pinned')) {
                     clearTimeout(hoverTimeout);
                     panel.classList.remove('collapsed');
                     updateTabVisibility(panel);
                 }
-            }, { passive: true });
+            });
             
             // Collapse on leave (only if not pinned)
             panel.addEventListener('mouseleave', () => {
@@ -133,6 +135,23 @@ class BeeHiveSimulator {
             updateTabVisibility(panel);
         });
         
+        // Close panels when tapping outside (touch devices only)
+        document.addEventListener('touchstart', (e) => {
+            // Check if touch is outside all panels and tabs
+            const touchedPanel = e.target.closest('.panel');
+            const touchedTab = e.target.closest('.panel-tab');
+            
+            // If touched outside panels and tabs, collapse all unpinned panels
+            if (!touchedPanel && !touchedTab) {
+                panels.forEach(panel => {
+                    if (!panel.classList.contains('pinned')) {
+                        panel.classList.add('collapsed');
+                        updateTabVisibility(panel);
+                    }
+                });
+            }
+        }, { passive: true });
+        
         // Setup panel tabs (clickable indicators)
         const tabs = document.querySelectorAll('.panel-tab');
         tabs.forEach(tab => {
@@ -143,6 +162,7 @@ class BeeHiveSimulator {
                 // Handler to toggle pin (mouse and touch)
                 const handleTabClick = (e) => {
                     e.preventDefault();
+                    e.stopPropagation();
                     panel.classList.toggle('pinned');
                     if (panel.classList.contains('pinned')) {
                         panel.classList.remove('collapsed');
@@ -153,6 +173,11 @@ class BeeHiveSimulator {
                 // Click/tap tab to toggle pin
                 tab.addEventListener('click', handleTabClick);
                 tab.addEventListener('touchend', handleTabClick);
+                
+                // Prevent tab touches from closing panels
+                tab.addEventListener('touchstart', (e) => {
+                    e.stopPropagation();
+                });
                 
                 // Hover tab to show panel temporarily
                 tab.addEventListener('mouseenter', () => {
