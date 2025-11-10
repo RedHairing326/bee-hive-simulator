@@ -692,6 +692,9 @@ class BeeHiveSimulator {
             document.getElementById('stat-queen-eggs-hour').textContent = '---';
             document.getElementById('stat-queen-task').textContent = '---';
         }
+        
+        // Display version
+        document.getElementById('stat-version').textContent = this.config.version || '1.0.0';
     }
 }
 
