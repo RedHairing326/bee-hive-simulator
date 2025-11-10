@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bee Hive Simulator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            transition: background-color 0.5s ease;
+        }
+
+        body.light-mode {
+            background-color: #f5f5dc;
+            color: #333;
+        }
+
+        body.dark-mode {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+        }
+
+        #canvas-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100vw;
+            height: 100vh;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        canvas {
+            border: 2px solid #8B4513;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        /* Collapsible panel styles */
+        .panel {
+            position: fixed;
+            background: rgba(255, 255, 255, 0.75);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            font-size: 14px;
+            transition: transform 0.3s ease, opacity 0.3s ease, background 0.3s ease;
+            cursor: pointer;
+        }
+
+        body.dark-mode .panel {
+            background: rgba(40, 40, 40, 0.75);
+            color: #e0e0e0;
+        }
+
+        .panel:hover,
+        .panel.pinned {
+            background: rgba(255, 255, 255, 0.95);
+            cursor: default;
+        }
+
+        body.dark-mode .panel:hover,
+        body.dark-mode .panel.pinned {
+            background: rgba(40, 40, 40, 0.95);
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .pin-btn {
+            background: none;
+            border: none;
+            font-size: 18px;
+            cursor: pointer;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+            padding: 0 5px;
+        }
+
+        .pin-btn:hover {
+            opacity: 1;
+        }
+
+        .panel.pinned .pin-btn {
+            opacity: 1;
+        }
+
+        /* Touch-friendly improvements */
+        @media (hover: none) and (pointer: coarse) {
+            /* Mobile/touch devices */
+            .pin-btn {
+                font-size: 24px;
+                padding: 8px 12px;
+                opacity: 0.8;
+                min-width: 44px;
+                min-height: 44px;
+            }
+            
+            .panel-tab {
+                padding: 12px 16px;
+                font-size: 14px;
+                min-width: 44px;
+                min-height: 44px;
+            }
+            
+            input[type="range"] {
+                height: 44px;
+                padding: 10px 0;
+            }
+            
+            input[type="datetime-local"] {
+                min-height: 44px;
+                font-size: 16px;
+            }
+        }
+        
+        /* Active/touch state feedback */
+        .pin-btn:active {
+            transform: scale(0.95);
+        }
+        
+        .panel-tab:active {
+            transform: scale(0.98);
+        }
+
+        #hud {
+            top: 20px;
+            left: 20px;
+            min-width: 200px;
+        }
+
+        #hud.collapsed {
+            transform: translateX(-220px);
+            opacity: 0.3;
+        }
+
+        #hud.collapsed:hover {
+            opacity: 1;
+        }
+
+        #hud h3 {
+            margin-bottom: 10px;
+            font-size: 16px;
+            border-bottom: 2px solid #FFB300;
+            padding-bottom: 5px;
+        }
+
+        #hud .stat {
+            margin: 5px 0;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        #hud .stat-label {
+            font-weight: 600;
+        }
+
+        #controls {
+            bottom: 20px;
+            right: 20px;
+            min-width: 300px;
+            z-index: 100;
+        }
+
+        #controls.visible {
+            display: block;
+        }
+
+        #controls.collapsed {
+            transform: translateX(320px);
+            opacity: 0.3;
+        }
+
+        #controls.collapsed:hover {
+            opacity: 1;
+        }
+
+        .control-group {
+            margin: 10px 0;
+            text-align: center;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            max-width: 300px;
+            margin: 5px 0;
+        }
+
+        input[type="datetime-local"] {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            font-size: 14px;
+            width: 100%;
+            max-width: 250px;
+        }
+
+        body.dark-mode input[type="datetime-local"] {
+            background: #333;
+            color: #e0e0e0;
+            border-color: #555;
+        }
+
+        #legend {
+            top: 20px;
+            right: 20px;
+            font-size: 12px;
+            max-height: 90vh;
+            overflow-y: auto;
+            overflow-x: visible;
+        }
+
+        #legend.collapsed {
+            transform: translateX(320px);
+            opacity: 0.3;
+        }
+
+        #legend.collapsed:hover {
+            opacity: 1;
+        }
+
+        #legend h3 {
+            margin-bottom: 10px;
+            font-size: 14px;
+            border-bottom: 2px solid #FFB300;
+            padding-bottom: 5px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 5px 0;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border: 1px solid #333;
+            margin-right: 8px;
+            border-radius: 2px;
+        }
+
+        body.dark-mode .legend-color {
+            border-color: #999;
+        }
+
+        /* Tooltip styles */
+        .legend-item {
+            position: relative;
+        }
+
+        .legend-item .tooltip {
+            visibility: hidden;
+            opacity: 0;
+            position: fixed;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            white-space: normal;
+            width: 220px;
+            max-width: 220px;
+            z-index: 10000;
+            transition: opacity 0.2s, visibility 0.2s;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            pointer-events: none;
+        }
+
+        body.dark-mode .legend-item .tooltip {
+            background: rgba(255, 255, 255, 0.95);
+            color: #000;
+        }
+
+        .legend-item:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        .tooltip::before {
+            content: '';
+            position: absolute;
+            left: 100%;
+            top: 50%;
+            transform: translateY(-50%);
+            border: 6px solid transparent;
+            border-left-color: rgba(0, 0, 0, 0.9);
+        }
+
+        body.dark-mode .tooltip::before {
+            border-left-color: rgba(255, 255, 255, 0.95);
+        }
+
+        /* Panel hover tabs */
+        .panel-tab {
+            position: fixed;
+            background: rgba(255, 179, 0, 0.8);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            z-index: 99;
+            white-space: nowrap;
+        }
+
+        body.dark-mode .panel-tab {
+            background: rgba(139, 69, 19, 0.9);
+        }
+
+        .panel-tab:hover {
+            background: rgba(255, 179, 0, 1);
+            transform: scale(1.05);
+        }
+
+        body.dark-mode .panel-tab:hover {
+            background: rgba(139, 69, 19, 1);
+        }
+
+        #hud-tab {
+            top: 50%;
+            left: 0;
+            transform: translateY(-50%);
+            border-left: none;
+            border-top-left-radius: 0;
+            border-bottom-left-radius: 0;
+        }
+
+        #legend-tab {
+            top: 50%;
+            right: 0;
+            transform: translateY(-50%);
+            border-right: none;
+            border-top-right-radius: 0;
+            border-bottom-right-radius: 0;
+        }
+
+        #controls-tab {
+            bottom: 20px;
+            right: 0;
+            border-right: none;
+            border-top-right-radius: 0;
+            border-bottom-right-radius: 0;
+        }
+
+        .panel-tab.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* Cell hover tooltip */
+        .cell-tooltip {
+            position: fixed;
+            background: rgba(0, 0, 0, 0.95);
+            color: white;
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 10001;
+            display: none;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+            min-width: 180px;
+            line-height: 1.6;
+        }
+
+        body.dark-mode .cell-tooltip {
+            background: rgba(255, 255, 255, 0.95);
+            color: #000;
+        }
+
+        .cell-tooltip.visible {
+            display: block;
+        }
+
+        .cell-tooltip-header {
+            font-weight: bold;
+            font-size: 13px;
+            margin-bottom: 6px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid rgba(255, 179, 0, 0.5);
+        }
+
+        .cell-tooltip-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 3px 0;
+        }
+
+        .cell-tooltip-label {
+            opacity: 0.8;
+        }
+
+        .cell-tooltip-value {
+            font-weight: 600;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="hiveCanvas"></canvas>
+        <div id="cell-tooltip" class="cell-tooltip"></div>
+    </div>
+
+    <div class="panel-tab" id="hud-tab">📊 Stats</div>
+    <div id="hud" class="panel collapsed">
+        <div class="panel-header">
+            <h3 style="margin: 0;">🐝 Hive Status</h3>
+            <button class="pin-btn" title="Pin panel">📌</button>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Population:</span>
+            <span id="stat-population">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Brood:</span>
+            <span id="stat-brood">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Honey:</span>
+            <span id="stat-honey">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Pollen:</span>
+            <span id="stat-pollen">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Water:</span>
+            <span id="stat-water">0</span>
+        </div>
+        <div class="stat" style="border-top: 1px solid #FFB300; margin-top: 8px; padding-top: 8px;">
+            <span class="stat-label">Inside:</span>
+            <span id="stat-inside">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Outside:</span>
+            <span id="stat-outside">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Foraging/hr:</span>
+            <span id="stat-foraging-rate">0</span>
+        </div>
+        <div class="stat" style="border-top: 1px solid #FFB300; margin-top: 8px; padding-top: 8px;">
+            <span class="stat-label">Sim Time:</span>
+            <span id="stat-sim-time">0d 0h</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Time:</span>
+            <span id="stat-time">--:--</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Date:</span>
+            <span id="stat-date">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Season:</span>
+            <span id="stat-season">---</span>
+        </div>
+        <h3 style="margin-top: 15px; margin-bottom: 5px; font-size: 14px; color: #ff69b4;">👑 Queen Status</h3>
+        <div class="stat">
+            <span class="stat-label">Age:</span>
+            <span id="stat-queen-age">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Lifespan:</span>
+            <span id="stat-queen-lifespan">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Eggs Laid (Total):</span>
+            <span id="stat-queen-eggs-total">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Eggs (Last Hour):</span>
+            <span id="stat-queen-eggs-hour">---</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Current Task:</span>
+            <span id="stat-queen-task">---</span>
+        </div>
+    </div>
+
+    <div class="panel-tab" id="controls-tab">⚙️ Controls</div>
+    <div id="controls" class="panel collapsed visible">
+        <div class="panel-header">
+            <h3 style="margin: 0;">⚙️ Controls</h3>
+            <button class="pin-btn" title="Pin panel">📌</button>
+        </div>
+        <div class="control-group">
+            <label>Time Multiplier: <span id="multiplier-value">1</span>x</label>
+            <input type="range" id="time-multiplier" min="1" max="1000" value="1" step="1">
+        </div>
+        <div class="control-group">
+            <label>Start Time:</label>
+            <input type="datetime-local" id="start-time">
+        </div>
+    </div>
+
+    <div class="panel-tab" id="legend-tab">📋 Legend</div>
+    <div id="legend" class="panel collapsed">
+        <div class="panel-header">
+            <h3 style="margin: 0;">📋 Legend</h3>
+            <button class="pin-btn" title="Pin panel">📌</button>
+        </div>
+        <h3 style="margin-top: 10px;">Cell Ring Colors</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #F5F5DC; background: transparent;"></div>
+            <span>Empty</span>
+            <div class="tooltip">Available for use. Queen can lay eggs here, or workers can store food. May need cleaning first if dirty.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #FFFFFF; background: transparent;"></div>
+            <span>Egg</span>
+            <div class="tooltip">Freshly laid by the queen. Takes ~3 mins to hatch into larvae. Essential for maintaining hive population.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #FFE4B5; background: transparent;"></div>
+            <span>Larvae (Hungry)</span>
+            <div class="tooltip">Needs feeding! Nurse bees must feed larvae with royal jelly. Unfed larvae can die, reducing hive population.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #FFDAB9; background: transparent;"></div>
+            <span>Larvae (Fed)</span>
+            <div class="tooltip">Well-fed larvae developing normally. Will soon pupate into capped brood. Critical stage for future workers.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #D2691E; background: transparent;"></div>
+            <span>Capped Brood</span>
+            <div class="tooltip">Sealed pupae transforming into adult bees. Takes ~12 mins. New workers will emerge to help the colony!</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #87CEEB; background: transparent;"></div>
+            <span>Nectar</span>
+            <div class="tooltip">Raw nectar brought by foragers. Will slowly convert to honey. Used to feed larvae and provide energy for workers.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #FFD700; background: transparent;"></div>
+            <span>Honey</span>
+            <div class="tooltip">Partially processed nectar. Primary food storage for the hive. Consumed slowly by bees to survive, especially through winter.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #FF8C00; background: transparent;"></div>
+            <span>Capped Honey</span>
+            <div class="tooltip">Fully matured and sealed honey. Long-term food storage. Workers cap it with wax to preserve it indefinitely.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #FFA500; background: transparent;"></div>
+            <span>Pollen</span>
+            <div class="tooltip">Fresh pollen collected from flowers. Rich in protein, essential for feeding larvae and young bees. Will ferment into bee bread.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #FF8C00; background: transparent;"></div>
+            <span>Bee Bread</span>
+            <div class="tooltip">Fermented pollen with added enzymes. More nutritious and easier to digest. Critical for brood development and worker health.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #00CED1; background: transparent;"></div>
+            <span>Water</span>
+            <div class="tooltip">Collected water for cooling the hive and diluting honey. Essential during hot weather to regulate temperature through evaporation.</div>
+        </div>
+        <h3 style="margin-top: 15px;">Bee Dot Colors</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #FF1493;"></div>
+            <span>Queen</span>
+            <div class="tooltip">The heart of the colony! Lays all eggs (up to 2,000/day). Lives ~3 years. If she dies, workers create an emergency replacement from larvae.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #000000;"></div>
+            <span>Young Worker</span>
+            <div class="tooltip">Younger bees (0-50% lifespan). Work inside: nursing larvae, feeding queen, cleaning cells, attending queen. Critical for brood care.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #666666;"></div>
+            <span>Old Worker</span>
+            <div class="tooltip">Older bees (50-100% lifespan). Forage outside, collect water, cap honey, remove dead bees. More experienced but slower. Risk death while foraging.</div>
+        </div>
+        <h3 style="margin-top: 15px;">Cargo Indicators</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #87CEEB;"></div>
+            <span>Carrying Nectar</span>
+            <div class="tooltip">Bee returning from flowers with nectar. Will store in cells on hive edges. Most common forage item during spring/summer.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #FFA500;"></div>
+            <span>Carrying Pollen</span>
+            <div class="tooltip">Bee carrying protein-rich pollen. Essential for feeding larvae. Stored separately from honey, usually near brood.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #00CED1;"></div>
+            <span>Carrying Water</span>
+            <div class="tooltip">Water collector! Brings water when hive overheats. Used for cooling via evaporation and diluting thick honey for consumption.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #FFD700;"></div>
+            <span>Carrying Food</span>
+            <div class="tooltip">Bee carrying honey or pollen from storage to feed larvae or the queen. Shows internal food distribution. Bees must collect food before nursing.</div>
+        </div>
+        <h3 style="margin-top: 15px;">Special</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="border: 3px solid #90EE90; background: transparent;"></div>
+            <span>Entrance</span>
+            <div class="tooltip">Hive entrance (green ring). Bees use these cells to enter/exit for foraging. Typically at the bottom of the hive. Guarded in real hives.</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #8B4513;"></div>
+            <span>Dirty Cell (Brown Dot)</span>
+            <div class="tooltip">This cell needs cleaning. Worker bees will polish and prepare it for reuse. Cells become dirty after brood emerges or food is consumed.</div>
+        </div>
+        
+        <h3 style="margin-top: 15px;">Bee Types</h3>
+        <div class="legend-item">
+            <span style="color: #FF0000; font-weight: bold; margin-right: 8px;">✕</span>
+            <span>Dead Bee (Red X)</span>
+            <div class="tooltip">A deceased bee shown as a red X in the cell center. Undertaker bees will remove the body to prevent disease spread.</div>
+        </div>
+        <div class="legend-item">
+            <span style="color: #FF0000; font-weight: bold; margin-right: 8px;">✕</span>
+            <span>Carrying Dead Bee</span>
+            <div class="tooltip">Undertaker carrying a dead bee (shown as small red X). They transport bodies to the hive entrance for disposal outside.</div>
+        </div>
+    </div>
+
+    <script type="module" src="main.js"></script>
+</body>
+</html>
+
