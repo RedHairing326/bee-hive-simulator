@@ -145,6 +145,8 @@ class BeeHiveSimulator {
         panels.forEach(panel => {
             const pinBtn = panel.querySelector('.pin-btn');
             let hoverTimeout;
+            let touchAutoCloseTimeout;
+            const AUTO_CLOSE_DELAY = this.config?.ui?.mobile?.autoCollapseDelay || 5000; // 5 seconds default
             
             // Pin button handler (mouse and touch)
             const handlePinToggle = (e) => {
@@ -154,6 +156,11 @@ class BeeHiveSimulator {
                 
                 if (panel.classList.contains('pinned')) {
                     panel.classList.remove('collapsed');
+                    // Clear auto-close timer when pinned
+                    if (touchAutoCloseTimeout) {
+                        clearTimeout(touchAutoCloseTimeout);
+                        touchAutoCloseTimeout = null;
+                    }
                 }
                 
                 updateTabVisibility(panel);
@@ -168,6 +175,7 @@ class BeeHiveSimulator {
             panel.addEventListener('mouseenter', () => {
                 if (!panel.classList.contains('pinned')) {
                     clearTimeout(hoverTimeout);
+                    clearTimeout(touchAutoCloseTimeout);
                     panel.classList.remove('collapsed');
                     updateTabVisibility(panel);
                 }
@@ -175,12 +183,39 @@ class BeeHiveSimulator {
             
             // Touch to expand (only if not pinned)
             panel.addEventListener('touchstart', (e) => {
-                // Stop propagation to prevent document-level touch handler from closing it
+                // Stop propagation to prevent document-level touch handler from closing it immediately
                 e.stopPropagation();
                 if (!panel.classList.contains('pinned')) {
                     clearTimeout(hoverTimeout);
+                    clearTimeout(touchAutoCloseTimeout);
                     panel.classList.remove('collapsed');
                     updateTabVisibility(panel);
+                    
+                    // Auto-close after delay on touch devices
+                    if (this.isMobile) {
+                        touchAutoCloseTimeout = setTimeout(() => {
+                            if (!panel.classList.contains('pinned')) {
+                                panel.classList.add('collapsed');
+                                updateTabVisibility(panel);
+                            }
+                            touchAutoCloseTimeout = null;
+                        }, AUTO_CLOSE_DELAY);
+                    }
+                }
+            });
+            
+            // Keep panel open while touching/interacting with it
+            panel.addEventListener('touchmove', (e) => {
+                // Reset auto-close timer while user is interacting
+                if (touchAutoCloseTimeout && !panel.classList.contains('pinned')) {
+                    clearTimeout(touchAutoCloseTimeout);
+                    touchAutoCloseTimeout = setTimeout(() => {
+                        if (!panel.classList.contains('pinned')) {
+                            panel.classList.add('collapsed');
+                            updateTabVisibility(panel);
+                        }
+                        touchAutoCloseTimeout = null;
+                    }, AUTO_CLOSE_DELAY);
                 }
             });
             
@@ -203,9 +238,12 @@ class BeeHiveSimulator {
             // Check if touch is outside all panels and tabs
             const touchedPanel = e.target.closest('.panel');
             const touchedTab = e.target.closest('.panel-tab');
+            const touchedPinBtn = e.target.closest('.pin-btn');
+            const touchedCanvas = e.target.closest('#hiveCanvas') || e.target.closest('#canvas-container');
             
-            // If touched outside panels and tabs, collapse all unpinned panels
-            if (!touchedPanel && !touchedTab) {
+            // If touched outside panels, tabs, and buttons, collapse all unpinned panels
+            // Also close if touching the canvas (main game area)
+            if ((!touchedPanel && !touchedTab && !touchedPinBtn) || touchedCanvas) {
                 panels.forEach(panel => {
                     if (!panel.classList.contains('pinned')) {
                         panel.classList.add('collapsed');
@@ -217,6 +255,8 @@ class BeeHiveSimulator {
         
         // Setup panel tabs (clickable indicators)
         const tabs = document.querySelectorAll('.panel-tab');
+        const tabAutoCloseTimers = new Map(); // Track auto-close timers for tabs
+        
         tabs.forEach(tab => {
             const panelId = tab.id.replace('-tab', '');
             const panel = document.getElementById(panelId);
@@ -226,9 +266,29 @@ class BeeHiveSimulator {
                 const handleTabClick = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    
+                    // Clear any existing auto-close timer
+                    if (tabAutoCloseTimers.has(panelId)) {
+                        clearTimeout(tabAutoCloseTimers.get(panelId));
+                        tabAutoCloseTimers.delete(panelId);
+                    }
+                    
                     panel.classList.toggle('pinned');
                     if (panel.classList.contains('pinned')) {
                         panel.classList.remove('collapsed');
+                    } else {
+                        // If unpinning, show panel and set auto-close timer
+                        panel.classList.remove('collapsed');
+                        if (this.isMobile) {
+                            const timer = setTimeout(() => {
+                                if (!panel.classList.contains('pinned')) {
+                                    panel.classList.add('collapsed');
+                                    updateTabVisibility(panel);
+                                }
+                                tabAutoCloseTimers.delete(panelId);
+                            }, this.config?.ui?.mobile?.autoCollapseDelay || 5000);
+                            tabAutoCloseTimers.set(panelId, timer);
+                        }
                     }
                     updateTabVisibility(panel);
                 };
@@ -245,6 +305,11 @@ class BeeHiveSimulator {
                 // Hover tab to show panel temporarily
                 tab.addEventListener('mouseenter', () => {
                     if (!panel.classList.contains('pinned')) {
+                        // Clear auto-close timer when hovering
+                        if (tabAutoCloseTimers.has(panelId)) {
+                            clearTimeout(tabAutoCloseTimers.get(panelId));
+                            tabAutoCloseTimers.delete(panelId);
+                        }
                         panel.classList.remove('collapsed');
                         updateTabVisibility(panel);
                     }

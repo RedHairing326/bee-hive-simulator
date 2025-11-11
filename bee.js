@@ -49,6 +49,12 @@ export class Bee {
         this.config = config;
         this.lastTaskAssignTime = 0;
         this.simulationTime = 0;
+        this.workDuration = 0; // Track how long bee has been working
+        this.restTimer = 0; // Time remaining before bee can work again
+        this.lastWanderTime = 0; // Track when bee last wandered
+        this.taskStartTime = 0; // Track when current task started
+        this.taskTimeout = 0; // Maximum time for current task
+        this.lastPathCheck = 0; // Track when path was last validated
         
         // Queen-specific stats
         if (type === BeeType.QUEEN) {
@@ -139,6 +145,40 @@ export class Bee {
             }
         }
         
+        // Update rest timer (bees need rest after working)
+        if (this.restTimer > 0) {
+            this.restTimer -= deltaTime;
+        }
+        
+        // Track work duration for rest calculation
+        if (this.task !== BeeTask.IDLE && this.restTimer <= 0) {
+            this.workDuration += deltaTime;
+        } else if (this.task === BeeTask.IDLE) {
+            this.workDuration = 0; // Reset when idle
+            this.taskStartTime = 0; // Reset task start time
+        }
+        
+        // Task timeout check - cancel tasks that take too long
+        if (this.task !== BeeTask.IDLE && this.taskTimeout > 0) {
+            const taskDuration = this.simulationTime - this.taskStartTime;
+            if (taskDuration > this.taskTimeout) {
+                // Task has timed out, cancel it
+                this.cancelTask(hive, 'timeout');
+                return null;
+            }
+        }
+        
+        // Validate task target periodically (every 2 seconds)
+        if (this.task !== BeeTask.IDLE && this.targetCell && 
+            (this.simulationTime - this.lastPathCheck) > 2) {
+            this.lastPathCheck = this.simulationTime;
+            if (!this.validateTaskTarget(hive)) {
+                // Target is no longer valid, cancel task
+                this.cancelTask(hive, 'invalid_target');
+                return null;
+            }
+        }
+        
         // Update task timer
         if (this.taskTimer > 0) {
             this.taskTimer -= deltaTime * this.getSpeedMultiplier();
@@ -165,6 +205,24 @@ export class Bee {
                 this.q = this.targetQ;
                 this.r = this.targetR;
                 
+                // Validate path is still valid before continuing
+                if (this.path && this.path.length > 0) {
+                    // Check if next cell in path is still valid
+                    const nextCell = this.path[0];
+                    const cell = hive.getCell(nextCell.q, nextCell.r);
+                    if (!cell || cell.isFull()) {
+                        // Path is blocked, recalculate
+                        if (this.targetCell) {
+                            this.findPath(hive);
+                        } else {
+                            // No target, cancel movement
+                            this.path = [];
+                            this.cancelTask(hive, 'path_blocked');
+                            return null;
+                        }
+                    }
+                }
+                
                 // Check if we have more path to follow
                 if (this.path && this.path.length > 0) {
                     this.startMovingToNextCell();
@@ -173,15 +231,32 @@ export class Bee {
                 }
             }
         } else if (this.path && this.path.length > 0) {
-            // Start moving to next cell in path
-            this.startMovingToNextCell();
+            // Validate path before starting movement
+            const nextCell = this.path[0];
+            const cell = hive.getCell(nextCell.q, nextCell.r);
+            if (!cell || cell.isFull()) {
+                // Path is blocked, recalculate
+                if (this.targetCell) {
+                    this.findPath(hive);
+                } else {
+                    this.path = [];
+                    this.cancelTask(hive, 'path_blocked');
+                    return null;
+                }
+            } else {
+                // Start moving to next cell in path
+                this.startMovingToNextCell();
+            }
         }
         
         // If idle and no task, assign new task
         // Prevent infinite loops by limiting task assignment attempts
-        if (this.task === BeeTask.IDLE && this.taskTimer <= 0 && this.moveProgress >= 1.0) {
-            // Don't assign tasks every frame - add a small cooldown
-            if (!this.lastTaskAssignTime || (this.simulationTime - this.lastTaskAssignTime) > 0.1) {
+        if (this.task === BeeTask.IDLE && this.taskTimer <= 0 && this.moveProgress >= 1.0 && this.restTimer <= 0) {
+            // Calculate dynamic check interval based on hive needs
+            const checkInterval = this.calculateTaskCheckInterval(hive);
+            
+            // Don't assign tasks every frame - use dynamic interval
+            if (!this.lastTaskAssignTime || (this.simulationTime - this.lastTaskAssignTime) >= checkInterval) {
                 this.lastTaskAssignTime = this.simulationTime;
                 this.assignTask(hive);
             }
@@ -192,6 +267,288 @@ export class Bee {
     
     setSimulationTime(time) {
         this.simulationTime = time;
+        // Initialize task start time if starting a new task
+        if (this.task !== BeeTask.IDLE && this.taskStartTime === 0) {
+            this.taskStartTime = time;
+            this.setTaskTimeout();
+        }
+    }
+    
+    setTaskTimeout() {
+        // Set timeout based on task type
+        // Timeouts are generous to allow for pathfinding delays
+        switch (this.task) {
+            case BeeTask.UNDERTAKING:
+                this.taskTimeout = 120; // 2 minutes max for undertaking
+                break;
+            case BeeTask.FORAGING:
+                this.taskTimeout = 300; // 5 minutes max for foraging
+                break;
+            case BeeTask.NURSING:
+            case BeeTask.FEEDING_QUEEN:
+                this.taskTimeout = 180; // 3 minutes max for feeding
+                break;
+            case BeeTask.CLEANING:
+                this.taskTimeout = 90; // 1.5 minutes max for cleaning
+                break;
+            case BeeTask.CAPPING_HONEY:
+                this.taskTimeout = 60; // 1 minute max for capping
+                break;
+            case BeeTask.COLLECTING_FOOD:
+                this.taskTimeout = 120; // 2 minutes max for collecting
+                break;
+            case BeeTask.TEMPERATURE_REGULATION:
+                this.taskTimeout = 240; // 4 minutes max for temp regulation
+                break;
+            case BeeTask.WATER_COLLECTION:
+                this.taskTimeout = 300; // 5 minutes max for water collection
+                break;
+            default:
+                this.taskTimeout = 180; // Default 3 minutes
+        }
+    }
+    
+    validateTaskTarget(hive) {
+        // Check if the task target is still valid
+        if (!this.targetCell) return true; // No target to validate
+        
+        const cell = hive.getCell(this.targetCell.q, this.targetCell.r);
+        if (!cell) return false; // Cell doesn't exist
+        
+        // Validate based on task type
+        switch (this.task) {
+            case BeeTask.UNDERTAKING:
+                // Target should still have a dead bee
+                if (!cell.hasDeadBee() || hive.isEntranceCell(this.targetCell.q, this.targetCell.r)) {
+                    return false;
+                }
+                break;
+            case BeeTask.CLEANING:
+                // Target should still be dirty and empty
+                if (!cell.isDirty || !cell.isEmpty()) {
+                    return false;
+                }
+                break;
+            case BeeTask.NURSING:
+                // Target should still have hungry larvae
+                if (cell.state !== CellState.LARVAE_HUNGRY) {
+                    return false;
+                }
+                // Check if cell has dead bee or is too crowded
+                if (cell.hasDeadBee()) {
+                    return false;
+                }
+                const beesInCell = cell.occupyingBees ? cell.occupyingBees.length : 0;
+                if (beesInCell >= 3) {
+                    return false;
+                }
+                break;
+            case BeeTask.FEEDING_QUEEN:
+                // Queen should still exist and be at target location
+                if (!hive.queen || 
+                    hive.queen.q !== this.targetCell.q || 
+                    hive.queen.r !== this.targetCell.r) {
+                    return false;
+                }
+                break;
+            case BeeTask.CAPPING_HONEY:
+                // Target should still need capping
+                if (cell.state !== CellState.HONEY_COMPLETE) {
+                    return false;
+                }
+                break;
+            case BeeTask.COLLECTING_FOOD:
+                // Target should still have food
+                if (!cell.isFood() || cell.contentAmount <= 0) {
+                    return false;
+                }
+                break;
+            case BeeTask.STORING_FOOD:
+                // Target should still be available for storage
+                if (!cell.isEmpty() && cell.state !== CellState.NECTAR && 
+                    cell.state !== CellState.POLLEN && cell.state !== CellState.WATER) {
+                    return false;
+                }
+                break;
+        }
+        
+        return true;
+    }
+    
+    cancelTask(hive, reason = 'unknown') {
+        // Cancel current task and reset to idle
+        if (this.task === BeeTask.UNDERTAKING && this.hasDeadBee) {
+            // If carrying a dead bee, drop it at current location
+            const currentCell = hive.getCell(this.q, this.r);
+            if (currentCell && !hive.isEntranceCell(this.q, this.r)) {
+                currentCell.addDeadBee();
+            }
+            this.hasDeadBee = false;
+        }
+        
+        // Reset task state
+        this.task = BeeTask.IDLE;
+        this.targetCell = null;
+        this.nextTask = null;
+        this.nextTargetCell = null;
+        this.path = [];
+        this.taskStartTime = 0;
+        this.taskTimeout = 0;
+        this.taskTimer = 1 + Math.random() * 2; // Short delay before reassignment
+        
+        // Log cancellation for debugging (can be removed in production)
+        if (reason !== 'unknown') {
+            // console.log(`Task cancelled: ${reason}`);
+        }
+    }
+    
+    calculateTaskCheckInterval(hive) {
+        // Dynamic task checking based on hive urgency
+        // More urgent situations = more frequent checks
+        
+        const stats = hive.getStats();
+        const totalDeadBees = Array.from(hive.cells.values()).filter(c => c.hasDeadBee()).length;
+        const hungryLarvae = Array.from(hive.cells.values()).filter(c => c.state === CellState.LARVAE_HUNGRY).length;
+        const dirtyCells = Array.from(hive.cells.values()).filter(c => c.isDirty).length;
+        
+        // Base interval
+        let interval = 0.1; // Minimum 0.1 seconds
+        
+        // Urgent situations reduce interval (check more often)
+        if (totalDeadBees > 0) {
+            interval = 0.05; // Very urgent - check every 0.05s
+        } else if (hungryLarvae > stats.population * 0.1) {
+            interval = 0.1; // Many hungry larvae - check every 0.1s
+        } else if (dirtyCells > 5) {
+            interval = 0.2; // Many dirty cells - check every 0.2s
+        } else {
+            // Normal situation - check less frequently
+            interval = 0.5 + Math.random() * 1.0; // 0.5-1.5 seconds
+        }
+        
+        return interval;
+    }
+    
+    needsRest() {
+        // Bees need rest after working for extended periods
+        // Older bees need more rest
+        const maxWorkDuration = this.isOld() ? 300 : 600; // 5-10 minutes of work
+        return this.workDuration > maxWorkDuration;
+    }
+    
+    scanNearbyForWork(hive) {
+        // Proactively scan nearby cells for work opportunities
+        const neighbors = getHexNeighbors(this.q, this.r);
+        const workOpportunities = [];
+        
+        for (const neighbor of neighbors) {
+            const cell = hive.getCell(neighbor.q, neighbor.r);
+            if (!cell) continue;
+            
+            // Check for various work opportunities
+            if (cell.isDirty && cell.isEmpty()) {
+                workOpportunities.push({ type: 'cleaning', cell: neighbor, priority: 3 });
+            }
+            if (cell.state === CellState.HONEY_COMPLETE) {
+                workOpportunities.push({ type: 'capping', cell: neighbor, priority: 2 });
+            }
+            if (cell.state === CellState.LARVAE_HUNGRY) {
+                const nursesAtCell = hive.bees.filter(b => 
+                    b.task === BeeTask.NURSING &&
+                    b.targetCell && b.targetCell.q === neighbor.q && b.targetCell.r === neighbor.r
+                ).length;
+                if (nursesAtCell < 2) {
+                    workOpportunities.push({ type: 'nursing', cell: neighbor, priority: 5 });
+                }
+            }
+            if (cell.hasDeadBee() && !hive.isEntranceCell(neighbor.q, neighbor.r)) {
+                const undertakersAtCell = hive.bees.filter(b => 
+                    b.task === BeeTask.UNDERTAKING && !b.hasDeadBee &&
+                    b.targetCell && b.targetCell.q === neighbor.q && b.targetCell.r === neighbor.r
+                ).length;
+                if (undertakersAtCell < 2) {
+                    workOpportunities.push({ type: 'undertaking', cell: neighbor, priority: 6 });
+                }
+            }
+        }
+        
+        // Return highest priority work
+        if (workOpportunities.length > 0) {
+            workOpportunities.sort((a, b) => b.priority - a.priority);
+            return workOpportunities[0];
+        }
+        
+        return null;
+    }
+    
+    findWorkDirection(hive) {
+        // Find direction toward areas with work (more purposeful wandering)
+        const centerCol = hive.config.grid.columns / 2;
+        const centerRow = hive.config.grid.rows / 2;
+        
+        // Find cells with work
+        const workCells = [];
+        for (const cell of hive.cells.values()) {
+            if (cell.isDirty || cell.state === CellState.LARVAE_HUNGRY || 
+                (cell.hasDeadBee() && !hive.isEntranceCell(cell.q, cell.r))) {
+                workCells.push(cell);
+            }
+        }
+        
+        if (workCells.length === 0) {
+            // No work found, move away from crowded areas
+            const neighbors = getHexNeighbors(this.q, this.r);
+            const validNeighbors = neighbors.filter(n => {
+                const cell = hive.getCell(n.q, n.r);
+                return cell && !hive.isEntranceCell(n.q, n.r) && !cell.isFull();
+            });
+            
+            if (validNeighbors.length > 0) {
+                // Prefer less crowded neighbors
+                validNeighbors.sort((a, b) => {
+                    const cellA = hive.getCell(a.q, a.r);
+                    const cellB = hive.getCell(b.q, b.r);
+                    // Safety check - cells should exist since we filtered for them, but be safe
+                    if (!cellA || !cellB) return 0;
+                    return (cellA.occupyingBees?.length || 0) - (cellB.occupyingBees?.length || 0);
+                });
+                return validNeighbors[0];
+            }
+            return null;
+        }
+        
+        // Find nearest work cell
+        let nearestWork = null;
+        let minDist = Infinity;
+        for (const workCell of workCells) {
+            const dist = distance(this.q, this.r, workCell.q, workCell.r);
+            if (dist < minDist) {
+                minDist = dist;
+                nearestWork = workCell;
+            }
+        }
+        
+        if (nearestWork) {
+            // Move toward nearest work (one step)
+            const neighbors = getHexNeighbors(this.q, this.r);
+            let bestNeighbor = null;
+            let bestDist = Infinity;
+            
+            for (const neighbor of neighbors) {
+                const cell = hive.getCell(neighbor.q, neighbor.r);
+                if (cell && !hive.isEntranceCell(neighbor.q, neighbor.r) && !cell.isFull()) {
+                    const dist = distance(neighbor.q, neighbor.r, nearestWork.q, nearestWork.r);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestNeighbor = neighbor;
+                    }
+                }
+            }
+            
+            return bestNeighbor;
+        }
+        
+        return null;
     }
     
     startMovingToNextCell() {
@@ -324,6 +681,8 @@ export class Bee {
                 if (hive.queen && Math.random() < 0.1) {
                     this.task = BeeTask.ATTENDING_QUEEN;
                     this.targetCell = { q: hive.queen.q, r: hive.queen.r };
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
                     this.findPath(hive);
                     return;
                 }
@@ -337,6 +696,8 @@ export class Bee {
                             this.task = BeeTask.COLLECTING_FOOD;
                             this.nextTask = BeeTask.FEEDING_QUEEN;
                             this.targetCell = foodCell;
+                            this.taskStartTime = this.simulationTime;
+                            this.setTaskTimeout();
                             this.findPath(hive);
                             return;
                         }
@@ -344,6 +705,8 @@ export class Bee {
                         // We have food, go feed the queen
                         this.task = BeeTask.FEEDING_QUEEN;
                         this.targetCell = { q: hive.queen.q, r: hive.queen.r };
+                        this.taskStartTime = this.simulationTime;
+                        this.setTaskTimeout();
                         this.findPath(hive);
                         return;
                     }
@@ -374,6 +737,8 @@ export class Bee {
                             this.nextTask = BeeTask.NURSING;
                             this.nextTargetCell = hungryLarvae; // Store larvae location
                             this.targetCell = foodCell;
+                            this.taskStartTime = this.simulationTime;
+                            this.setTaskTimeout();
                             this.findPath(hive);
                             return;
                         }
@@ -417,10 +782,16 @@ export class Bee {
             }
             
             if (undertakersAtCell < maxUndertakersPerDeadBee) {
-                this.task = BeeTask.UNDERTAKING;
-                this.targetCell = deadBeeCell;
-                this.findPath(hive);
-                return;
+                // Validate target is still valid before assigning
+                const targetCell = hive.getCell(deadBeeCell.q, deadBeeCell.r);
+                if (targetCell && targetCell.hasDeadBee() && !hive.isEntranceCell(deadBeeCell.q, deadBeeCell.r)) {
+                    this.task = BeeTask.UNDERTAKING;
+                    this.targetCell = deadBeeCell;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
+                    this.findPath(hive);
+                    return;
+                }
             }
         }
         
@@ -435,10 +806,16 @@ export class Bee {
             ).length;
             
             if (cleanersAtCell === 0) {
-                this.task = BeeTask.CLEANING;
-                this.targetCell = dirtyCell;
-                this.findPath(hive);
-                return;
+                // Validate target is still dirty before assigning
+                const targetCell = hive.getCell(dirtyCell.q, dirtyCell.r);
+                if (targetCell && targetCell.isDirty && targetCell.isEmpty()) {
+                    this.task = BeeTask.CLEANING;
+                    this.targetCell = dirtyCell;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
+                    this.findPath(hive);
+                    return;
+                }
             }
         }
         
@@ -454,18 +831,125 @@ export class Bee {
                 if (regulatorsAtSpot < 5) {
                     this.task = BeeTask.TEMPERATURE_REGULATION;
                     this.targetCell = tempCell;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
                     this.findPath(hive);
                     return;
                 }
             }
         }
         
-        // DAYTIME-ONLY TASKS
-        // If it's nighttime, skip foraging and other outdoor activities
+        // NIGHT-TIME BEHAVIOR
+        // At night, bees can still do indoor maintenance tasks
         if (activityMultiplier < 0.1) {
-            // At night, bees without tasks just rest
+            // Check if bee needs rest first
+            if (this.needsRest()) {
+                this.restTimer = 30 + Math.random() * 30; // Rest 30-60 seconds
+                this.workDuration = 0;
+                this.task = BeeTask.IDLE;
+                this.taskTimer = this.restTimer;
+                return;
+            }
+            
+            // At night, prioritize indoor tasks:
+            // 1. Cleaning (always needed)
+            const dirtyCell = hive.findDirtyCell();
+            if (dirtyCell && Math.random() < 0.6) {
+                const cleanersAtCell = hive.bees.filter(b => 
+                    b.task === BeeTask.CLEANING &&
+                    b.targetCell && b.targetCell.q === dirtyCell.q && b.targetCell.r === dirtyCell.r
+                ).length;
+                
+                if (cleanersAtCell === 0) {
+                    this.task = BeeTask.CLEANING;
+                    this.targetCell = dirtyCell;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
+                    this.findPath(hive);
+                    return;
+                }
+            }
+            
+            // 2. Temperature regulation (critical at night)
+            if (hive.needsTemperatureRegulation && hive.needsTemperatureRegulation()) {
+                const tempCell = hive.findTemperatureRegulationSpot();
+                if (tempCell && Math.random() < 0.5) {
+                    const regulatorsAtSpot = hive.bees.filter(b => 
+                        b.task === BeeTask.TEMPERATURE_REGULATION &&
+                        b.targetCell && b.targetCell.q === tempCell.q && b.targetCell.r === tempCell.r
+                    ).length;
+                    
+                    if (regulatorsAtSpot < 8) { // More bees needed at night
+                        this.task = BeeTask.TEMPERATURE_REGULATION;
+                        this.targetCell = tempCell;
+                        this.findPath(hive);
+                        return;
+                    }
+                }
+            }
+            
+            // 3. Nursing (brood needs care 24/7)
+            const hungryLarvae = hive.findHungryLarvae();
+            if (hungryLarvae && Math.random() < 0.7) { // Higher chance at night
+                const larvaeCell = hive.getCell(hungryLarvae.q, hungryLarvae.r);
+                const nursesAtCell = hive.bees.filter(b => 
+                    b.task === BeeTask.NURSING &&
+                    b.targetCell && b.targetCell.q === hungryLarvae.q && b.targetCell.r === hungryLarvae.r
+                ).length;
+                const beesInCell = larvaeCell && larvaeCell.occupyingBees ? larvaeCell.occupyingBees.length : 0;
+                const hasDeadBee = larvaeCell && larvaeCell.hasDeadBee();
+                
+                if (nursesAtCell < 2 && beesInCell < 3 && !hasDeadBee) {
+                    if (!this.hasFood) {
+                        const foodCell = hive.findFoodForFeeding();
+                        if (foodCell) {
+                            this.task = BeeTask.COLLECTING_FOOD;
+                            this.nextTask = BeeTask.NURSING;
+                            this.nextTargetCell = hungryLarvae;
+                            this.targetCell = foodCell;
+                            this.findPath(hive);
+                            return;
+                        }
+                    } else {
+                        this.task = BeeTask.NURSING;
+                        this.targetCell = hungryLarvae;
+                        this.findPath(hive);
+                        return;
+                    }
+                }
+            }
+            
+            // 4. Proactive scanning for nearby work
+            const nearbyWork = this.scanNearbyForWork(hive);
+            if (nearbyWork) {
+                if (nearbyWork.type === 'cleaning') {
+                    this.task = BeeTask.CLEANING;
+                    this.targetCell = nearbyWork.cell;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
+                    this.findPath(hive);
+                    return;
+                } else if (nearbyWork.type === 'nursing' && !this.hasFood) {
+                    const foodCell = hive.findFoodForFeeding();
+                    if (foodCell) {
+                        this.task = BeeTask.COLLECTING_FOOD;
+                        this.nextTask = BeeTask.NURSING;
+                        this.nextTargetCell = nearbyWork.cell;
+                        this.targetCell = foodCell;
+                        this.findPath(hive);
+                        return;
+                    }
+                } else if (nearbyWork.type === 'undertaking') {
+                    this.task = BeeTask.UNDERTAKING;
+                    this.targetCell = nearbyWork.cell;
+                    this.findPath(hive);
+                    return;
+                }
+            }
+            
+            // No urgent tasks at night, rest or wander purposefully
             this.task = BeeTask.IDLE;
-            this.taskTimer = 10;
+            this.taskTimer = 5 + Math.random() * 5; // Shorter rest at night
             return;
         }
         
@@ -482,10 +966,16 @@ export class Bee {
                 ).length;
                 
                 if (cappersAtCell === 0) {
-                    this.task = BeeTask.CAPPING_HONEY;
-                    this.targetCell = honeyCappingCell;
-                    this.findPath(hive);
-                    return;
+                    // Validate target still needs capping
+                    const targetCell = hive.getCell(honeyCappingCell.q, honeyCappingCell.r);
+                    if (targetCell && targetCell.state === CellState.HONEY_COMPLETE) {
+                        this.task = BeeTask.CAPPING_HONEY;
+                        this.targetCell = honeyCappingCell;
+                        this.taskStartTime = this.simulationTime;
+                        this.setTaskTimeout();
+                        this.findPath(hive);
+                        return;
+                    }
                 }
             }
             
@@ -498,6 +988,8 @@ export class Bee {
                 if (entrance) {
                     this.task = BeeTask.WATER_COLLECTION;
                     this.targetCell = entrance;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
                     this.findPath(hive);
                     return;
                 }
@@ -529,6 +1021,8 @@ export class Bee {
             if (entrance) {
                 this.task = BeeTask.FORAGING;
                 this.targetCell = entrance;
+                this.taskStartTime = this.simulationTime;
+                this.setTaskTimeout();
                 this.findPath(hive);
                 return;
             }
@@ -559,6 +1053,8 @@ export class Bee {
                             this.nextTask = BeeTask.NURSING;
                             this.nextTargetCell = hungryLarvae; // Store larvae location
                             this.targetCell = foodCell;
+                            this.taskStartTime = this.simulationTime;
+                            this.setTaskTimeout();
                             this.findPath(hive);
                             return;
                         }
@@ -566,6 +1062,8 @@ export class Bee {
                         // We have food, go nurse the larvae
                         this.task = BeeTask.NURSING;
                         this.targetCell = hungryLarvae;
+                        this.taskStartTime = this.simulationTime;
+                        this.setTaskTimeout();
                         this.findPath(hive);
                         return;
                     }
@@ -573,32 +1071,104 @@ export class Bee {
             }
         }
         
-        // Default to idle - but idle bees should wander!
-        // If there are dead bees, check for work very frequently
+        // Default to idle - but idle bees should be proactive!
+        
+        // Check if bee needs rest after working
+        if (this.needsRest()) {
+            this.restTimer = 20 + Math.random() * 20; // Rest 20-40 seconds
+            this.workDuration = 0;
+            this.task = BeeTask.IDLE;
+            this.taskTimer = this.restTimer;
+            return;
+        }
+        
+        // Proactive task discovery - scan nearby cells for work
+        const nearbyWork = this.scanNearbyForWork(hive);
+        if (nearbyWork) {
+            if (nearbyWork.type === 'cleaning') {
+                this.task = BeeTask.CLEANING;
+                this.targetCell = nearbyWork.cell;
+                this.findPath(hive);
+                return;
+            } else if (nearbyWork.type === 'capping' && !this.isYoung()) {
+                this.task = BeeTask.CAPPING_HONEY;
+                this.targetCell = nearbyWork.cell;
+                this.findPath(hive);
+                return;
+            } else if (nearbyWork.type === 'nursing') {
+                if (!this.hasFood) {
+                    const foodCell = hive.findFoodForFeeding();
+                    if (foodCell) {
+                        this.task = BeeTask.COLLECTING_FOOD;
+                        this.nextTask = BeeTask.NURSING;
+                        this.nextTargetCell = nearbyWork.cell;
+                        this.targetCell = foodCell;
+                        this.findPath(hive);
+                        return;
+                    }
+                } else {
+                    this.task = BeeTask.NURSING;
+                    this.targetCell = nearbyWork.cell;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
+                    this.findPath(hive);
+                    return;
+                }
+            } else if (nearbyWork.type === 'undertaking') {
+                this.task = BeeTask.UNDERTAKING;
+                this.targetCell = nearbyWork.cell;
+                this.taskStartTime = this.simulationTime;
+                this.setTaskTimeout();
+                this.findPath(hive);
+                return;
+            }
+        }
+        
+        // No immediate work found, set idle timer based on urgency
         const totalDeadBees = Array.from(hive.cells.values()).filter(c => c.hasDeadBee()).length;
-        if (totalDeadBees > 0) {
-            this.taskTimer = 1 + Math.random() * 2; // 1-3 seconds when dead bees present
+        const hungryLarvae = Array.from(hive.cells.values()).filter(c => c.state === CellState.LARVAE_HUNGRY).length;
+        
+        if (totalDeadBees > 0 || hungryLarvae > 3) {
+            this.taskTimer = 0.5 + Math.random() * 1.0; // 0.5-1.5 seconds when urgent
         } else {
-            this.taskTimer = Math.random() * 10 + 5; // 5-15 seconds normally
+            this.taskTimer = 2 + Math.random() * 3; // 2-5 seconds normally (reduced from 5-15)
         }
         this.task = BeeTask.IDLE;
         
-        // 50% chance to wander to a random neighbor instead of staying still
-        if (Math.random() < 0.5 && this.moveProgress >= 1.0) {
-            const neighbors = getHexNeighbors(this.q, this.r);
-            const validNeighbors = neighbors.filter(n => {
-                const cell = hive.getCell(n.q, n.r);
-                // Can move to any valid cell that's not an entrance and not full
-                return cell !== null && 
-                       !hive.isEntranceCell(n.q, n.r) && 
-                       !cell.isFull();
-            });
-            
-            if (validNeighbors.length > 0) {
-                const target = validNeighbors[Math.floor(Math.random() * validNeighbors.length)];
-                this.targetCell = { q: target.q, r: target.r };
-                this.path = [target];
+        // Purposeful wandering - move toward work areas or away from crowds
+        // Only wander if enough time has passed since last wander
+        if (this.moveProgress >= 1.0 && (this.simulationTime - this.lastWanderTime) > 3) {
+            const workDirection = this.findWorkDirection(hive);
+            if (workDirection) {
+                this.lastWanderTime = this.simulationTime;
+                this.targetCell = { q: workDirection.q, r: workDirection.r };
+                this.path = [workDirection];
                 this.startMovingToNextCell();
+            } else {
+                // Fallback: random wander (but less frequent)
+                if (Math.random() < 0.3) { // Reduced from 50%
+                    const neighbors = getHexNeighbors(this.q, this.r);
+                    const validNeighbors = neighbors.filter(n => {
+                        const cell = hive.getCell(n.q, n.r);
+                        return cell !== null && 
+                               !hive.isEntranceCell(n.q, n.r) && 
+                               !cell.isFull();
+                    });
+                    
+                    if (validNeighbors.length > 0) {
+                        // Prefer less crowded neighbors
+                        validNeighbors.sort((a, b) => {
+                            const cellA = hive.getCell(a.q, a.r);
+                            const cellB = hive.getCell(b.q, b.r);
+                            return (cellA.occupyingBees?.length || 0) - (cellB.occupyingBees?.length || 0);
+                        });
+                        const target = validNeighbors[0];
+                        this.lastWanderTime = this.simulationTime;
+                        this.targetCell = { q: target.q, r: target.r };
+                        this.path = [target];
+                        this.startMovingToNextCell();
+                    }
+                }
             }
         }
         } catch (error) {
@@ -673,6 +1243,8 @@ export class Bee {
                             if (storageCell) {
                                 this.task = BeeTask.STORING_FOOD;
                                 this.targetCell = storageCell;
+                                this.taskStartTime = this.simulationTime;
+                                this.setTaskTimeout();
                                 this.findPath(hive);
                             } else {
                                 // No storage available, rest before trying again
@@ -709,11 +1281,15 @@ export class Bee {
                     this.targetCell = this.nextTargetCell;
                     this.nextTask = null;
                     this.nextTargetCell = null;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
                     this.findPath(hive);
                 } else if (this.nextTask === BeeTask.FEEDING_QUEEN && hive.queen) {
                     this.task = BeeTask.FEEDING_QUEEN;
                     this.targetCell = { q: hive.queen.q, r: hive.queen.r };
                     this.nextTask = null;
+                    this.taskStartTime = this.simulationTime;
+                    this.setTaskTimeout();
                     this.findPath(hive);
                 } else {
                     // No valid next task
@@ -726,13 +1302,20 @@ export class Bee {
                 // Feed larvae at target
                 if (this.targetCell) {
                     const cell = hive.getCell(this.targetCell.q, this.targetCell.r);
-                    if (cell && this.hasFood) {
+                    // Validate target is still valid before feeding
+                    if (cell && this.hasFood && cell.state === CellState.LARVAE_HUNGRY) {
                         cell.feedLarvae();
                         this.hasFood = false; // Consumed the food
+                    } else {
+                        // Target is no longer valid, cancel task
+                        this.cancelTask(hive, 'larvae_fed_by_other');
+                        return;
                     }
                 }
                 this.task = BeeTask.IDLE;
                 this.targetCell = null;
+                this.taskStartTime = 0;
+                this.taskTimeout = 0;
                 break;
                 
             case BeeTask.FEEDING_QUEEN:
@@ -771,23 +1354,38 @@ export class Bee {
                     this.hasDeadBee = false;
                     this.task = BeeTask.IDLE;
                     this.targetCell = null;
+                    this.taskStartTime = 0;
+                    this.taskTimeout = 0;
                     // Dead bee is now outside the hive - it's gone!
                 } else {
                     // We've finished picking up the dead bee, now carry it to entrance
-                    this.hasDeadBee = true;
-                    const entrance = hive.findNearestEntrance(this.q, this.r);
-                    if (entrance) {
-                        this.targetCell = entrance;
-                        this.findPath(hive);
-                    } else {
-                        // No entrance found, drop it back in current cell
-                        const currentCell = hive.getCell(this.q, this.r);
-                        if (currentCell) {
-                            currentCell.addDeadBee(); // Put it back
+                    // Validate target cell still has dead bee
+                    if (this.targetCell) {
+                        const cell = hive.getCell(this.targetCell.q, this.targetCell.r);
+                        if (cell && cell.hasDeadBee()) {
+                            cell.removeDeadBee();
+                            this.hasDeadBee = true;
+                            const entrance = hive.findNearestEntrance(this.q, this.r);
+                            if (entrance) {
+                                this.targetCell = entrance;
+                                this.taskStartTime = this.simulationTime;
+                                this.setTaskTimeout();
+                                this.findPath(hive);
+                            } else {
+                                // No entrance found, drop it back in current cell
+                                const currentCell = hive.getCell(this.q, this.r);
+                                if (currentCell) {
+                                    currentCell.addDeadBee(); // Put it back
+                                }
+                                this.hasDeadBee = false;
+                                this.cancelTask(hive, 'no_entrance');
+                            }
+                        } else {
+                            // Dead bee already removed by another bee
+                            this.cancelTask(hive, 'dead_bee_already_removed');
                         }
-                        this.hasDeadBee = false;
-                        this.task = BeeTask.IDLE;
-                        this.targetCell = null;
+                    } else {
+                        this.cancelTask(hive, 'no_target');
                     }
                 }
                 break;
