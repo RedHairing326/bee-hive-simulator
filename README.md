@@ -1,7 +1,7 @@
 # 🐝 Bee Hive Simulator
 
 A real-time bee hive simulator that displays a hexagonal honeycomb with realistic bee behavior, synchronized with real-world time and seasons.
-
+Checkout the app live here on github pages: https://redhairing326.github.io/bee-hive-simulator/
 ## Features
 
 - **Hexagonal Grid**: Properly tiled hexagonal cells forming a realistic honeycomb structure
