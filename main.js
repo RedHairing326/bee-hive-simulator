@@ -3,55 +3,139 @@
 import { Hive } from './hive.js';
 import { Renderer } from './renderer.js';
 import { getSeason, formatTime, formatDate, isDarkMode } from './utils.js';
+import { events, EventNames } from './event-system.js';
+import { validateConfig, normalizeConfig } from './config-validator.js';
 
+/**
+ * @class BeeHiveSimulator
+ * Main simulator class managing the bee hive simulation
+ */
 class BeeHiveSimulator {
     constructor() {
+        /** @type {Object|null} */
         this.config = null;
+        /** @type {Hive|null} */
         this.hive = null;
+        /** @type {Renderer|null} */
         this.renderer = null;
+        /** @type {HTMLCanvasElement|null} */
         this.canvas = null;
+        /** @type {number} */
         this.lastTimestamp = 0;
+        /** @type {number} */
         this.timeMultiplier = 1;
+        /** @type {Date} */
         this.simulationDate = new Date();
+        /** @type {number} */
         this.elapsedSimulationTime = 0; // Track total simulation time in seconds
+        /** @type {boolean} */
         this.running = false;
+        /** @type {boolean} */
+        this.paused = false;
+        /** @type {boolean} */
+        this.isMobile = false;
+        /** @type {boolean} */
+        this.performanceMode = false;
+        /** @type {boolean} */
+        this.isPageVisible = true;
+        /** @type {number} */
+        this.zoomLevel = 1.0;
+        /** @type {{x: number, y: number}} */
+        this.panOffset = { x: 0, y: 0 };
+        /** @type {boolean} */
+        this.isPanning = false;
+        /** @type {{x: number, y: number}} */
+        this.lastPanPoint = { x: 0, y: 0 };
         
-        this.init();
+        // Setup visibility change handler for battery optimization
+        this.setupVisibilityHandler();
+        
+        this.init().catch(error => {
+            console.error('Failed to initialize simulator:', error);
+            events.emit(EventNames.SIMULATION_ERROR, error);
+            this.showError('Failed to initialize simulator. Please refresh the page.');
+        });
     }
     
+    /**
+     * Initialize the simulator
+     * @returns {Promise<void>}
+     */
     async init() {
-        // Load configuration
-        await this.loadConfig();
-        
-        // Detect mobile and apply mobile settings
-        this.isMobile = this.detectMobile();
-        this.applyMobileSettings();
-        
-        // Setup canvas
-        this.canvas = document.getElementById('hiveCanvas');
-        
-        // Create hive and renderer
-        this.hive = new Hive(this.config);
-        this.renderer = new Renderer(this.canvas, this.config);
-        
-        // Setup UI
-        this.setupUI();
-        
-        // Setup window resize handler
-        this.setupResizeHandler();
-        
-        // Setup orientation change handler
-        this.setupOrientationHandler();
-        
-        // Set initial time
-        if (this.config.ui.useCurrentTime) {
-            this.simulationDate = new Date();
+        try {
+            // Load configuration
+            await this.loadConfig();
+            
+            // Detect mobile and apply mobile settings
+            this.isMobile = this.detectMobile();
+            this.applyMobileSettings();
+            
+            // Setup canvas
+            this.canvas = document.getElementById('hiveCanvas');
+            if (!this.canvas) {
+                throw new Error('Canvas element not found');
+            }
+            
+            // Create hive and renderer with error handling
+            try {
+                this.hive = new Hive(this.config);
+                this.renderer = new Renderer(this.canvas, this.config);
+            } catch (error) {
+                console.error('Failed to create hive or renderer:', error);
+                throw new Error(`Failed to initialize simulation: ${error.message}`);
+            }
+            
+            // Setup UI
+            this.setupUI();
+            
+            // Setup window resize handler
+            this.setupResizeHandler();
+            
+            // Setup orientation change handler
+            this.setupOrientationHandler();
+            
+            // Setup mobile gestures
+            if (this.isMobile) {
+                this.setupMobileGestures();
+            }
+            
+            // Set initial time
+            if (this.config.ui.useCurrentTime) {
+                this.simulationDate = new Date();
+            }
+            
+            // Start simulation
+            this.running = true;
+            this.lastTimestamp = performance.now();
+            events.emit(EventNames.SIMULATION_START);
+            requestAnimationFrame((t) => this.gameLoop(t));
+        } catch (error) {
+            console.error('Initialization error:', error);
+            events.emit(EventNames.SIMULATION_ERROR, error);
+            throw error;
         }
-        
-        // Start simulation
-        this.running = true;
-        this.lastTimestamp = performance.now();
-        requestAnimationFrame((t) => this.gameLoop(t));
+    }
+    
+    /**
+     * Setup visibility change handler for battery optimization
+     */
+    setupVisibilityHandler() {
+        // Handle page visibility changes for battery optimization
+        document.addEventListener('visibilitychange', () => {
+            this.isPageVisible = !document.hidden;
+            
+            if (!this.isPageVisible && this.isMobile) {
+                // Page hidden on mobile - reduce update frequency
+                if (this.config && this.config.ui) {
+                    this.config.ui.targetFPS = Math.max(5, (this.config.ui.targetFPS || 30) * 0.2);
+                }
+            } else if (this.isPageVisible && this.isMobile) {
+                // Page visible - restore normal FPS
+                if (this.config && this.config.ui && this.config.ui.mobile) {
+                    this.config.ui.targetFPS = this.config.ui.mobile.targetFPS || 20;
+                }
+            }
+        });
     }
     
     detectMobile() {
@@ -356,7 +440,7 @@ class BeeHiveSimulator {
                 e.preventDefault();
                 
                 // Haptic feedback if supported
-                if (navigator.vibrate && this.config.ui.mobile?.enableHapticFeedback) {
+                if (navigator.vibrate && this.config?.ui?.mobile?.enableHapticFeedback) {
                     navigator.vibrate(30);
                 }
                 
@@ -386,6 +470,89 @@ class BeeHiveSimulator {
         canvas.addEventListener('gestureend', (e) => {
             e.preventDefault();
         });
+    }
+    
+    /**
+     * Setup mobile gestures for zoom and pan
+     */
+    setupMobileGestures() {
+        if (!this.isMobile || !this.canvas) return;
+        
+        const canvas = this.canvas;
+        let initialDistance = 0;
+        let initialZoom = 1.0;
+        let touches = [];
+        
+        // Pinch to zoom
+        canvas.addEventListener('touchstart', (e) => {
+            touches = Array.from(e.touches);
+            
+            if (touches.length === 2) {
+                // Two finger pinch
+                const touch1 = touches[0];
+                const touch2 = touches[1];
+                initialDistance = Math.hypot(
+                    touch2.clientX - touch1.clientX,
+                    touch2.clientY - touch1.clientY
+                );
+                initialZoom = this.zoomLevel;
+            } else if (touches.length === 1) {
+                // Single finger pan
+                this.isPanning = true;
+                this.lastPanPoint = { x: touches[0].clientX, y: touches[0].clientY };
+            }
+        }, { passive: true });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            touches = Array.from(e.touches);
+            
+            if (touches.length === 2 && initialDistance > 0) {
+                // Pinch zoom
+                e.preventDefault();
+                const touch1 = touches[0];
+                const touch2 = touches[1];
+                const currentDistance = Math.hypot(
+                    touch2.clientX - touch1.clientX,
+                    touch2.clientY - touch1.clientY
+                );
+                
+                const scale = currentDistance / initialDistance;
+                this.zoomLevel = Math.max(0.5, Math.min(3.0, initialZoom * scale));
+                
+                // Apply zoom to renderer if it supports it
+                if (this.renderer && typeof this.renderer.setZoom === 'function') {
+                    this.renderer.setZoom(this.zoomLevel);
+                }
+            } else if (touches.length === 1 && this.isPanning) {
+                // Pan
+                const touch = touches[0];
+                const deltaX = touch.clientX - this.lastPanPoint.x;
+                const deltaY = touch.clientY - this.lastPanPoint.y;
+                
+                this.panOffset.x += deltaX;
+                this.panOffset.y += deltaY;
+                
+                this.lastPanPoint = { x: touch.clientX, y: touch.clientY };
+                
+                // Apply pan to renderer if it supports it
+                if (this.renderer && typeof this.renderer.setPan === 'function') {
+                    this.renderer.setPan(this.panOffset.x, this.panOffset.y);
+                }
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener('touchend', (e) => {
+            if (e.touches.length === 0) {
+                // All touches ended
+                this.isPanning = false;
+                initialDistance = 0;
+                touches = [];
+            } else if (e.touches.length === 1) {
+                // One touch remaining, switch to pan mode
+                this.isPanning = true;
+                this.lastPanPoint = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            }
+        }, { passive: true });
     }
     
     updateAllTabVisibility() {
@@ -658,26 +825,65 @@ class BeeHiveSimulator {
         return names[state] || state;
     }
     
+    /**
+     * Load and validate configuration
+     * @returns {Promise<void>}
+     */
     async loadConfig() {
         try {
             const response = await fetch('config.json');
-            this.config = await response.json();
+            if (!response.ok) {
+                throw new Error(`Failed to fetch config.json: ${response.status} ${response.statusText}`);
+            }
+            
+            const rawConfig = await response.json();
+            
+            // Normalize config to fix common issues
+            const normalizedConfig = normalizeConfig(rawConfig);
+            
+            // Validate configuration
+            const validation = validateConfig(normalizedConfig);
+            
+            if (!validation.valid) {
+                console.error('Configuration validation failed:', validation.errors);
+                events.emit(EventNames.ERROR_CONFIG_INVALID, validation.errors);
+                
+                // Show warnings but continue with normalized config
+                if (validation.warnings.length > 0) {
+                    console.warn('Configuration warnings:', validation.warnings);
+                }
+                
+                // Use normalized config even if invalid (with defaults)
+                this.config = normalizedConfig;
+            } else {
+                this.config = normalizedConfig;
+                
+                // Show warnings if any
+                if (validation.warnings.length > 0) {
+                    console.warn('Configuration warnings:', validation.warnings);
+                }
+            }
             
             // Store original colors for toggling
-            this.originalColors = {
-                cellStates: {...this.config.colors.cellStates},
-                bees: {...this.config.colors.bees},
-                borders: {...this.config.colors.borders}
-            };
+            if (this.config.colors) {
+                this.originalColors = {
+                    cellStates: {...this.config.colors.cellStates},
+                    bees: {...this.config.colors.bees},
+                    borders: {...this.config.colors.borders}
+                };
+            }
             
             // Apply color blind mode if enabled
-            if (this.config.ui.colorBlindMode && this.config.colors.colorBlindPalette) {
+            if (this.config.ui && this.config.ui.colorBlindMode && this.config.colors && this.config.colors.colorBlindPalette) {
                 this.applyColorBlindPalette();
             }
         } catch (error) {
             console.error('Failed to load config.json:', error);
+            events.emit(EventNames.ERROR_CONFIG_INVALID, [error.message]);
+            
             // Use default config if file doesn't exist
             this.config = this.getDefaultConfig();
+            console.log('Using default configuration');
         }
     }
     
@@ -929,8 +1135,110 @@ class BeeHiveSimulator {
             });
         }
         
+        // Setup pause/resume button
+        this.setupPauseButton();
+        
+        // Setup performance mode toggle (mobile only)
+        if (this.isMobile) {
+            this.setupPerformanceModeToggle();
+        }
+        
         // Update theme based on time
         this.updateTheme();
+    }
+    
+    /**
+     * Setup pause/resume button
+     */
+    setupPauseButton() {
+        // Create pause button if it doesn't exist
+        let pauseBtn = document.getElementById('pause-toggle');
+        if (!pauseBtn) {
+            const controls = document.getElementById('controls');
+            if (controls) {
+                pauseBtn = document.createElement('button');
+                pauseBtn.id = 'pause-toggle';
+                pauseBtn.className = 'toggle-btn';
+                pauseBtn.innerHTML = '⏸️ Pause';
+                pauseBtn.style.marginTop = '10px';
+                controls.appendChild(pauseBtn);
+            }
+        }
+        
+        if (pauseBtn) {
+            const updateButton = () => {
+                pauseBtn.innerHTML = this.paused ? '▶️ Resume' : '⏸️ Pause';
+                pauseBtn.classList.toggle('active', this.paused);
+            };
+            
+            pauseBtn.addEventListener('click', () => {
+                this.togglePause();
+                updateButton();
+            });
+            
+            pauseBtn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                this.togglePause();
+                updateButton();
+            });
+            
+            // Listen to pause/resume events to update button
+            events.on(EventNames.SIMULATION_PAUSE, updateButton);
+            events.on(EventNames.SIMULATION_RESUME, updateButton);
+        }
+    }
+    
+    /**
+     * Setup performance mode toggle for mobile
+     */
+    setupPerformanceModeToggle() {
+        // Create performance mode button if it doesn't exist
+        let perfBtn = document.getElementById('performance-toggle');
+        if (!perfBtn) {
+            const controls = document.getElementById('controls');
+            if (controls) {
+                perfBtn = document.createElement('button');
+                perfBtn.id = 'performance-toggle';
+                perfBtn.className = 'toggle-btn';
+                perfBtn.innerHTML = '⚡ Performance Mode: <span id="performance-status">OFF</span>';
+                perfBtn.style.marginTop = '10px';
+                controls.appendChild(perfBtn);
+            }
+        }
+        
+        if (perfBtn) {
+            const perfStatus = document.getElementById('performance-status');
+            const updateButton = () => {
+                if (perfStatus) {
+                    perfStatus.textContent = this.performanceMode ? 'ON' : 'OFF';
+                }
+                perfBtn.classList.toggle('active', this.performanceMode);
+            };
+            
+            perfBtn.addEventListener('click', () => {
+                this.performanceMode = !this.performanceMode;
+                if (this.performanceMode) {
+                    // Reduce FPS and disable some features
+                    if (this.config && this.config.ui) {
+                        this.config.ui.targetFPS = Math.max(10, (this.config.ui.targetFPS || 30) * 0.5);
+                    }
+                } else {
+                    // Restore normal FPS
+                    if (this.config && this.config.ui && this.config.ui.mobile) {
+                        this.config.ui.targetFPS = this.config.ui.mobile.targetFPS || 20;
+                    }
+                }
+                updateButton();
+                events.emit(EventNames.UI_MOBILE_MODE_CHANGED, { performanceMode: this.performanceMode });
+            });
+            
+            perfBtn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                perfBtn.click();
+            });
+            
+            updateButton();
+        }
     }
     
     updateTheme() {
@@ -954,56 +1262,172 @@ class BeeHiveSimulator {
         this.updateHUD();
     }
     
+    /**
+     * Main game loop
+     * @param {number} timestamp - Current timestamp
+     */
     gameLoop(timestamp) {
         if (!this.running) return;
         
-        // FPS throttling for mobile optimization
-        const targetFPS = this.config.ui.targetFPS || 60;
-        const targetFrameTime = 1000 / targetFPS;
-        
-        if (!this.lastRenderTime) {
-            this.lastRenderTime = timestamp;
-        }
-        
-        const timeSinceLastRender = timestamp - this.lastRenderTime;
-        
-        const deltaTime = (timestamp - this.lastTimestamp) / 1000; // Convert to seconds
-        this.lastTimestamp = timestamp;
-        
-        // Update simulation time
-        // deltaTime is in seconds, timeMultiplier accelerates time
-        const simulationDelta = deltaTime * this.timeMultiplier;
-        
-        // Track total elapsed simulation time
-        this.elapsedSimulationTime += simulationDelta;
-        
-        // In our simulation, durations in config are in "days"
-        // 1 simulation day = 1 day of real time at 1x multiplier
-        // We need to convert real seconds to simulation time
-        // At 1x: 1 real second = 1 simulation second
-        // Convert simulation seconds to milliseconds for date
-        const simulationMilliseconds = simulationDelta * 1000;
-        this.simulationDate = new Date(this.simulationDate.getTime() + simulationMilliseconds);
-        
-        // Always update hive logic
-        this.hive.update(simulationDelta, this.simulationDate);
-        
-        // Only render at target FPS
-        if (timeSinceLastRender >= targetFrameTime) {
-            this.lastRenderTime = timestamp;
+        try {
+            // Skip updates if paused
+            if (this.paused) {
+                requestAnimationFrame((t) => this.gameLoop(t));
+                return;
+            }
             
-            // Render
-            this.renderer.render(this.hive);
+            // Skip updates if page is hidden and in battery optimization mode
+            if (!this.isPageVisible && this.isMobile && this.performanceMode) {
+                // Only update every 10th frame when hidden
+                if (Math.random() > 0.1) {
+                    requestAnimationFrame((t) => this.gameLoop(t));
+                    return;
+                }
+            }
             
-            // Update HUD
-            this.updateHUD();
+            // FPS throttling for mobile optimization
+            const targetFPS = (this.config && this.config.ui) ? (this.config.ui.targetFPS || 30) : 30;
+            const targetFrameTime = 1000 / targetFPS;
             
-            // Update theme
-            this.updateTheme();
+            if (!this.lastRenderTime) {
+                this.lastRenderTime = timestamp;
+            }
+            
+            const timeSinceLastRender = timestamp - this.lastRenderTime;
+            
+            const deltaTime = (timestamp - this.lastTimestamp) / 1000; // Convert to seconds
+            this.lastTimestamp = timestamp;
+            
+            // Update simulation time
+            // deltaTime is in seconds, timeMultiplier accelerates time
+            const simulationDelta = deltaTime * this.timeMultiplier;
+            
+            // Track total elapsed simulation time
+            this.elapsedSimulationTime += simulationDelta;
+            
+            // In our simulation, durations in config are in "days"
+            // 1 simulation day = 1 day of real time at 1x multiplier
+            // We need to convert real seconds to simulation time
+            // At 1x: 1 real second = 1 simulation second
+            // Convert simulation seconds to milliseconds for date
+            const simulationMilliseconds = simulationDelta * 1000;
+            this.simulationDate = new Date(this.simulationDate.getTime() + simulationMilliseconds);
+            
+            // Always update hive logic with error handling
+            if (this.hive) {
+                try {
+                    this.hive.update(simulationDelta, this.simulationDate);
+                } catch (error) {
+                    console.error('Error updating hive:', error);
+                    events.emit(EventNames.ERROR_SIMULATION_FAILED, error);
+                    // Continue running but log the error
+                }
+            }
+            
+            // Only render at target FPS
+            if (timeSinceLastRender >= targetFrameTime) {
+                this.lastRenderTime = timestamp;
+                
+                // Render with error handling
+                if (this.renderer && this.hive) {
+                    try {
+                        this.renderer.render(this.hive);
+                    } catch (error) {
+                        console.error('Error rendering:', error);
+                        events.emit(EventNames.ERROR_RENDER_FAILED, error);
+                    }
+                }
+                
+                // Update HUD
+                try {
+                    this.updateHUD();
+                } catch (error) {
+                    console.error('Error updating HUD:', error);
+                }
+                
+                // Update theme
+                try {
+                    this.updateTheme();
+                } catch (error) {
+                    console.error('Error updating theme:', error);
+                }
+            }
+        } catch (error) {
+            console.error('Critical error in game loop:', error);
+            events.emit(EventNames.SIMULATION_ERROR, error);
+            // Continue loop to prevent complete freeze
         }
         
         // Continue loop
         requestAnimationFrame((t) => this.gameLoop(t));
+    }
+    
+    /**
+     * Pause the simulation
+     */
+    pause() {
+        if (!this.paused) {
+            this.paused = true;
+            events.emit(EventNames.SIMULATION_PAUSE);
+        }
+    }
+    
+    /**
+     * Resume the simulation
+     */
+    resume() {
+        if (this.paused) {
+            this.paused = false;
+            this.lastTimestamp = performance.now();
+            events.emit(EventNames.SIMULATION_RESUME);
+        }
+    }
+    
+    /**
+     * Toggle pause/resume
+     */
+    togglePause() {
+        if (this.paused) {
+            this.resume();
+        } else {
+            this.pause();
+        }
+    }
+    
+    /**
+     * Show error message to user
+     * @param {string} message - Error message
+     */
+    showError(message) {
+        // Create or update error display
+        let errorDiv = document.getElementById('error-message');
+        if (!errorDiv) {
+            errorDiv = document.createElement('div');
+            errorDiv.id = 'error-message';
+            errorDiv.style.cssText = `
+                position: fixed;
+                top: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(255, 0, 0, 0.9);
+                color: white;
+                padding: 15px 20px;
+                border-radius: 8px;
+                z-index: 10000;
+                max-width: 80%;
+                text-align: center;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            `;
+            document.body.appendChild(errorDiv);
+        }
+        errorDiv.textContent = message;
+        
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+            if (errorDiv && errorDiv.parentNode) {
+                errorDiv.parentNode.removeChild(errorDiv);
+            }
+        }, 5000);
     }
     
     updateHUD() {

@@ -423,89 +423,153 @@ export class Hive {
         return this.cells.size;
     }
     
+    /**
+     * Update hive simulation
+     * @param {number} deltaTime - Time elapsed since last update
+     * @param {Date} currentDate - Current simulation date
+     */
     update(deltaTime, currentDate) {
-        this.currentDate = currentDate;
-        this.simulationTime += deltaTime;
-        
-        // Check if a new day has started (for daily summaries)
-        this.checkDayRollover(currentDate);
-        
-        // Update all cells - reset occupation
-        for (const cell of this.cells.values()) {
-            cell.occupyingBees = []; // Reset occupation array
+        if (!deltaTime || deltaTime <= 0 || !isFinite(deltaTime)) {
+            console.warn('Invalid deltaTime in hive.update:', deltaTime);
+            return;
         }
         
-        // Mark cells occupied by bees
-        for (const bee of this.bees) {
-            // Only count bees that are not outside AND not mid-movement
-            if (!bee.isOutsideHive && bee.moveProgress >= 1.0) {
-                // Use current position (not display position) for cell occupation
-                const cell = this.getCell(bee.q, bee.r);
+        if (!currentDate || !(currentDate instanceof Date)) {
+            console.warn('Invalid currentDate in hive.update:', currentDate);
+            return;
+        }
+        
+        try {
+            this.currentDate = currentDate;
+            this.simulationTime += deltaTime;
+            
+            // Check if a new day has started (for daily summaries)
+            this.checkDayRollover(currentDate);
+            
+            // Edge case: Empty hive
+            if (this.bees.length === 0) {
+                // Hive is empty - no updates needed
+                return;
+            }
+            
+            // Update all cells - reset occupation
+            for (const cell of this.cells.values()) {
                 if (cell) {
-                    cell.occupyingBees.push(bee);
+                    cell.occupyingBees = []; // Reset occupation array
                 }
             }
-        }
-        
-        // Update cells
-        for (const cell of this.cells.values()) {
-            const result = cell.update(deltaTime);
-            if (result === 'emerge') {
-                // New bee emerges from capped brood
-                this.emergeBee(cell);
-            }
-        }
-        
-        // Auto-cleanup: Remove any dead bees from entrance cells
-        // (They should fall outside the hive automatically)
-        for (const cell of this.entranceCells) {
-            const entranceCell = this.getCell(cell.q, cell.r);
-            if (entranceCell && entranceCell.deadBeeCount > 0) {
-                entranceCell.deadBeeCount = 0; // Clear all dead bees at entrance
-            }
-        }
-        
-        // Update bees
-        for (let i = this.bees.length - 1; i >= 0; i--) {
-            const bee = this.bees[i];
-            bee.setSimulationTime(this.simulationTime);
-            const result = bee.update(deltaTime, this);
             
-            if (result === 'died') {
-                // Track bee death in daily summary
-                this.recordBeeDied();
+            // Mark cells occupied by bees
+            for (const bee of this.bees) {
+                if (!bee) continue; // Skip invalid bees
                 
-                // Mark location where bee died (always mark it)
-                const cell = this.getCell(bee.q, bee.r);
-                if (cell && !bee.isOutsideHive) {
-                    // Don't add dead bees to entrance cells - they fall outside
-                    // Entrances are the boundary, dead bees there are disposed
-                    if (!this.isEntranceCell(bee.q, bee.r)) {
-                        cell.addDeadBee(); // Add the bee that just died
+                // Only count bees that are not outside AND not mid-movement
+                if (!bee.isOutsideHive && bee.moveProgress >= 1.0) {
+                    // Use current position (not display position) for cell occupation
+                    const cell = this.getCell(bee.q, bee.r);
+                    if (cell) {
+                        if (!cell.occupyingBees) {
+                            cell.occupyingBees = [];
+                        }
+                        cell.occupyingBees.push(bee);
+                    }
+                }
+            }
+            
+            // Update cells
+            for (const cell of this.cells.values()) {
+                if (!cell) continue;
+                
+                try {
+                    const result = cell.update(deltaTime);
+                    if (result === 'emerge') {
+                        // New bee emerges from capped brood
+                        this.emergeBee(cell);
+                    }
+                } catch (error) {
+                    console.error('Error updating cell:', error, cell);
+                    // Continue with other cells
+                }
+            }
+            
+            // Auto-cleanup: Remove any dead bees from entrance cells
+            // (They should fall outside the hive automatically)
+            for (const cell of this.entranceCells) {
+                if (!cell) continue;
+                const entranceCell = this.getCell(cell.q, cell.r);
+                if (entranceCell && entranceCell.deadBeeCount > 0) {
+                    entranceCell.deadBeeCount = 0; // Clear all dead bees at entrance
+                }
+            }
+            
+            // Update bees
+            for (let i = this.bees.length - 1; i >= 0; i--) {
+                const bee = this.bees[i];
+                if (!bee) {
+                    // Remove invalid bee
+                    this.bees.splice(i, 1);
+                    continue;
+                }
+                
+                try {
+                    bee.setSimulationTime(this.simulationTime);
+                    const result = bee.update(deltaTime, this);
+                    
+                    if (result === 'died') {
+                        // Track bee death in daily summary
+                        this.recordBeeDied();
                         
-                        // If the dying bee was carrying a dead bee, drop it here too
-                        if (bee.hasDeadBee) {
-                            cell.addDeadBee(); // Add the carried dead bee
+                        // Mark location where bee died (always mark it)
+                        const cell = this.getCell(bee.q, bee.r);
+                        if (cell && !bee.isOutsideHive) {
+                            // Don't add dead bees to entrance cells - they fall outside
+                            // Entrances are the boundary, dead bees there are disposed
+                            if (!this.isEntranceCell(bee.q, bee.r)) {
+                                cell.addDeadBee(); // Add the bee that just died
+                                
+                                // If the dying bee was carrying a dead bee, drop it here too
+                                if (bee.hasDeadBee) {
+                                    cell.addDeadBee(); // Add the carried dead bee
+                                }
+                            }
+                            // If at entrance, both the bee and any carried dead bee fall outside (removed from simulation)
+                        }
+                        
+                        this.bees.splice(i, 1);
+                        if (bee === this.queen) {
+                            this.queen = null;
                         }
                     }
-                    // If at entrance, both the bee and any carried dead bee fall outside (removed from simulation)
-                }
-                
-                this.bees.splice(i, 1);
-                if (bee === this.queen) {
-                    this.queen = null;
+                } catch (error) {
+                    console.error('Error updating bee:', error, bee);
+                    // Remove problematic bee to prevent infinite loops
+                    this.bees.splice(i, 1);
+                    if (bee === this.queen) {
+                        this.queen = null;
+                    }
                 }
             }
-        }
-        
-        // Update hive temperature based on environment and bee activity
-        this.updateTemperature(deltaTime);
-        
-        // Queen lays eggs as part of her behavior (handled in bee.js)
-        
-        // Check if queen is dead and create emergency queen
-        if (!this.queen && this.bees.length > 0) {
-            this.createEmergencyQueen();
+            
+            // Update hive temperature based on environment and bee activity
+            try {
+                this.updateTemperature(deltaTime);
+            } catch (error) {
+                console.error('Error updating temperature:', error);
+            }
+            
+            // Queen lays eggs as part of her behavior (handled in bee.js)
+            
+            // Check if queen is dead and create emergency queen
+            if (!this.queen && this.bees.length > 0) {
+                try {
+                    this.createEmergencyQueen();
+                } catch (error) {
+                    console.error('Error creating emergency queen:', error);
+                }
+            }
+        } catch (error) {
+            console.error('Critical error in hive.update:', error);
+            throw error;
         }
     }
     
@@ -745,82 +809,135 @@ export class Hive {
         }
     }
     
+    /**
+     * Get hive statistics
+     * @returns {Object} Statistics object
+     */
     getStats() {
-        let workerCount = 0;
-        let broodCount = 0;
-        let honeyCount = 0;
-        let pollenCount = 0;
-        let beesInside = 0;
-        let beesOutside = 0;
-        
-        for (const bee of this.bees) {
-            if (bee.type === BeeType.WORKER) {
-                workerCount++;
+        try {
+            let workerCount = 0;
+            let broodCount = 0;
+            let honeyCount = 0;
+            let pollenCount = 0;
+            let beesInside = 0;
+            let beesOutside = 0;
+            
+            // Edge case: No bees
+            if (!this.bees || this.bees.length === 0) {
+                return {
+                    population: 0,
+                    workers: 0,
+                    brood: 0,
+                    honey: 0,
+                    pollen: 0,
+                    water: 0,
+                    beesInside: 0,
+                    beesOutside: 0,
+                    foragingRate: 0,
+                    queenAge: 0,
+                    queenMaxAge: 0,
+                    queenEggsTotal: 0,
+                    queenEggsHour: 0,
+                    queenTask: '---',
+                    currentDaySummary: this.currentDaySummary || {},
+                    dailySummaries: this.dailySummaries || []
+                };
             }
             
-            if (bee.isOutsideHive) {
-                beesOutside++;
-            } else {
-                beesInside++;
+            for (const bee of this.bees) {
+                if (!bee) continue;
+                
+                if (bee.type === BeeType.WORKER) {
+                    workerCount++;
+                }
+                
+                if (bee.isOutsideHive) {
+                    beesOutside++;
+                } else {
+                    beesInside++;
+                }
             }
+            
+            for (const cell of this.cells.values()) {
+                if (!cell) continue;
+                
+                if (cell.isBrood && cell.isBrood()) {
+                    broodCount++;
+                }
+                if (cell.state === CellState.HONEY || cell.state === CellState.HONEY_COMPLETE) {
+                    honeyCount += (cell.contentAmount || 0);
+                }
+                if (cell.state === CellState.POLLEN || cell.state === CellState.BEE_BREAD) {
+                    pollenCount += (cell.contentAmount || 0);
+                }
+            }
+            
+            // Calculate foraging rate (trips per hour)
+            const foragingRate = this.foragingHistory ? this.foragingHistory.length : 0;
+            
+            // Count water cells
+            let waterCount = 0;
+            for (const cell of this.cells.values()) {
+                if (cell && cell.state === CellState.WATER) {
+                    waterCount += (cell.contentAmount || 0);
+                }
+            }
+            
+            // Queen stats
+            let queenAge = 0;
+            let queenMaxAge = 0;
+            let queenEggsTotal = 0;
+            let queenEggsHour = 0;
+            let queenTask = '---';
+            
+            if (this.queen) {
+                queenAge = this.queen.age || 0;
+                queenMaxAge = this.queen.maxAge || 0;
+                queenEggsTotal = this.queen.eggsLaidTotal || 0;
+                queenEggsHour = this.queen.eggsLaidHistory ? this.queen.eggsLaidHistory.length : 0;
+                queenTask = this.queen.task || 'idle';
+            }
+            
+            return {
+                population: this.bees.length,
+                workers: workerCount,
+                brood: broodCount,
+                honey: Math.floor(honeyCount),
+                pollen: Math.floor(pollenCount),
+                water: Math.floor(waterCount),
+                beesInside: beesInside,
+                beesOutside: beesOutside,
+                foragingRate: foragingRate,
+                queenAge: queenAge,
+                queenMaxAge: queenMaxAge,
+                queenEggsTotal: queenEggsTotal,
+                queenEggsHour: queenEggsHour,
+                queenTask: queenTask,
+                currentDaySummary: this.currentDaySummary || {},
+                dailySummaries: this.dailySummaries || []
+            };
+        } catch (error) {
+            console.error('Error getting stats:', error);
+            // Return safe defaults
+            return {
+                population: 0,
+                workers: 0,
+                brood: 0,
+                honey: 0,
+                pollen: 0,
+                water: 0,
+                beesInside: 0,
+                beesOutside: 0,
+                foragingRate: 0,
+                queenAge: 0,
+                queenMaxAge: 0,
+                queenEggsTotal: 0,
+                queenEggsHour: 0,
+                queenTask: '---',
+                currentDaySummary: {},
+                dailySummaries: []
+            };
         }
-        
-        for (const cell of this.cells.values()) {
-            if (cell.isBrood()) {
-                broodCount++;
-            }
-            if (cell.state === CellState.HONEY || cell.state === CellState.HONEY_COMPLETE) {
-                honeyCount += cell.contentAmount;
-            }
-            if (cell.state === CellState.POLLEN || cell.state === CellState.BEE_BREAD) {
-                pollenCount += cell.contentAmount;
-            }
-        }
-        
-        // Calculate foraging rate (trips per hour)
-        const foragingRate = this.foragingHistory.length;
-        
-        // Count water cells
-        let waterCount = 0;
-        for (const cell of this.cells.values()) {
-            if (cell.state === CellState.WATER) {
-                waterCount += cell.contentAmount;
-            }
-        }
-        
-        // Queen stats
-        let queenAge = 0;
-        let queenMaxAge = 0;
-        let queenEggsTotal = 0;
-        let queenEggsHour = 0;
-        let queenTask = '---';
-        
-        if (this.queen) {
-            queenAge = this.queen.age;
-            queenMaxAge = this.queen.maxAge;
-            queenEggsTotal = this.queen.eggsLaidTotal || 0;
-            queenEggsHour = this.queen.eggsLaidHistory ? this.queen.eggsLaidHistory.length : 0;
-            queenTask = this.queen.task || 'idle';
-        }
-        
-        return {
-            population: this.bees.length,
-            workers: workerCount,
-            brood: broodCount,
-            honey: Math.floor(honeyCount),
-            pollen: Math.floor(pollenCount),
-            water: Math.floor(waterCount),
-            beesInside: beesInside,
-            beesOutside: beesOutside,
-            foragingRate: foragingRate,
-            queenAge: queenAge,
-            queenMaxAge: queenMaxAge,
-            queenEggsTotal: queenEggsTotal,
-            queenEggsHour: queenEggsHour,
-            queenTask: queenTask,
-            currentDaySummary: this.currentDaySummary,
-            dailySummaries: this.dailySummaries
-        };
     }
     
     findDirtyCell() {
