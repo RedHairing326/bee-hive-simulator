@@ -403,10 +403,14 @@ export class Hive {
     
     findFoodForFeeding() {
         // Find food storage cells (honey or pollen) with content
+        // Include capped honey as it can be uncapped for feeding
         const foodCells = Array.from(this.cells.values())
             .filter(c => 
-                (c.state === CellState.HONEY || c.state === CellState.HONEY_COMPLETE || 
-                 c.state === CellState.POLLEN || c.state === CellState.BEE_BREAD) &&
+                (c.state === CellState.HONEY || 
+                 c.state === CellState.HONEY_COMPLETE || 
+                 c.state === CellState.HONEY_CAPPED ||
+                 c.state === CellState.POLLEN || 
+                 c.state === CellState.BEE_BREAD) &&
                 c.contentAmount > 0.5
             );
         
@@ -861,25 +865,45 @@ export class Hive {
             for (const cell of this.cells.values()) {
                 if (!cell) continue;
                 
-                if (cell.isBrood && cell.isBrood()) {
+                // Count brood cells (egg, larvae, capped brood)
+                if (typeof cell.isBrood === 'function' && cell.isBrood()) {
                     broodCount++;
                 }
-                if (cell.state === CellState.HONEY || cell.state === CellState.HONEY_COMPLETE) {
-                    honeyCount += (cell.contentAmount || 0);
+                
+                // Count honey (including capped honey)
+                if (cell.state === CellState.HONEY || 
+                    cell.state === CellState.HONEY_COMPLETE || 
+                    cell.state === CellState.HONEY_CAPPED) {
+                    const amount = cell.contentAmount;
+                    if (typeof amount === 'number' && isFinite(amount) && amount > 0) {
+                        honeyCount += amount;
+                    }
                 }
+                
+                // Count pollen and bee bread
                 if (cell.state === CellState.POLLEN || cell.state === CellState.BEE_BREAD) {
-                    pollenCount += (cell.contentAmount || 0);
+                    const amount = cell.contentAmount;
+                    if (typeof amount === 'number' && isFinite(amount) && amount > 0) {
+                        pollenCount += amount;
+                    }
                 }
             }
             
-            // Calculate foraging rate (trips per hour)
-            const foragingRate = this.foragingHistory ? this.foragingHistory.length : 0;
+            // Calculate foraging rate (trips per hour) - filter to last hour
+            let foragingRate = 0;
+            if (this.foragingHistory && this.foragingHistory.length > 0) {
+                const oneHourAgo = this.simulationTime - 3600;
+                foragingRate = this.foragingHistory.filter(t => t > oneHourAgo).length;
+            }
             
             // Count water cells
             let waterCount = 0;
             for (const cell of this.cells.values()) {
                 if (cell && cell.state === CellState.WATER) {
-                    waterCount += (cell.contentAmount || 0);
+                    const amount = cell.contentAmount;
+                    if (typeof amount === 'number' && isFinite(amount) && amount > 0) {
+                        waterCount += amount;
+                    }
                 }
             }
             
@@ -894,12 +918,60 @@ export class Hive {
                 queenAge = this.queen.age || 0;
                 queenMaxAge = this.queen.maxAge || 0;
                 queenEggsTotal = this.queen.eggsLaidTotal || 0;
-                queenEggsHour = this.queen.eggsLaidHistory ? this.queen.eggsLaidHistory.length : 0;
+                
+                // Calculate eggs laid in last hour (filter history)
+                if (this.queen.eggsLaidHistory && this.queen.eggsLaidHistory.length > 0) {
+                    const oneHourAgo = this.simulationTime - 3600;
+                    queenEggsHour = this.queen.eggsLaidHistory.filter(t => t > oneHourAgo).length;
+                } else {
+                    queenEggsHour = 0;
+                }
+                
                 queenTask = this.queen.task || 'idle';
             }
             
+            // Validate that inside + outside = total population
+            const totalBeesCounted = beesInside + beesOutside;
+            const actualPopulation = this.bees.length;
+            
+            // If there's a mismatch, log it and adjust (shouldn't happen, but safety check)
+            if (totalBeesCounted !== actualPopulation) {
+                console.warn(`Bee count mismatch: inside=${beesInside}, outside=${beesOutside}, total=${actualPopulation}`);
+                // Adjust to match actual population
+                if (beesInside + beesOutside === 0 && actualPopulation > 0) {
+                    // All bees are unaccounted for, assume they're inside
+                    beesInside = actualPopulation;
+                } else if (totalBeesCounted < actualPopulation) {
+                    // Some bees unaccounted for, add to inside
+                    beesInside += (actualPopulation - totalBeesCounted);
+                } else if (totalBeesCounted > actualPopulation) {
+                    // Overcounted, proportionally reduce
+                    const ratio = actualPopulation / totalBeesCounted;
+                    beesInside = Math.round(beesInside * ratio);
+                    beesOutside = actualPopulation - beesInside;
+                }
+            }
+            
+            // Validate worker count: workers + queen (if exists) should equal population
+            const queenCount = this.queen ? 1 : 0;
+            const expectedWorkers = actualPopulation - queenCount;
+            if (workerCount !== expectedWorkers && actualPopulation > 0) {
+                console.warn(`Worker count mismatch: counted=${workerCount}, expected=${expectedWorkers}, population=${actualPopulation}, queen=${queenCount}`);
+                // Recalculate worker count accurately
+                workerCount = 0;
+                for (const bee of this.bees) {
+                    if (bee && bee.type === BeeType.WORKER) {
+                        workerCount++;
+                    }
+                }
+                // If still wrong, use expected value
+                if (workerCount !== expectedWorkers) {
+                    workerCount = Math.max(0, expectedWorkers);
+                }
+            }
+            
             return {
-                population: this.bees.length,
+                population: actualPopulation,
                 workers: workerCount,
                 brood: broodCount,
                 honey: Math.floor(honeyCount),
