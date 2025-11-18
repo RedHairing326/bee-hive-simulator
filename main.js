@@ -46,6 +46,10 @@ class BeeHiveSimulator {
         this.isPanning = false;
         /** @type {{x: number, y: number}} */
         this.lastPanPoint = { x: 0, y: 0 };
+        /** @type {number} */
+        this.lastHUDUpdate = 0;
+        /** @type {number} */
+        this.lastThemeCheckHour = -1;
         
         // Setup visibility change handler for battery optimization
         this.setupVisibilityHandler();
@@ -831,12 +835,36 @@ class BeeHiveSimulator {
      */
     async loadConfig() {
         try {
-            const response = await fetch('config.json');
+            // Check cache first (localStorage for network optimization)
+            const cachedConfig = this.getCachedConfig();
+            if (cachedConfig) {
+                // Use cached config but still validate
+                const normalizedConfig = normalizeConfig(cachedConfig);
+                const validation = validateConfig(normalizedConfig);
+                
+                if (validation.valid) {
+                    this.config = normalizedConfig;
+                    // Still fetch in background to check for updates
+                    this.fetchConfigInBackground();
+                    return;
+                }
+            }
+            
+            // Fetch config from network
+            const response = await fetch('config.json', {
+                cache: 'no-cache', // Always check for updates
+                headers: {
+                    'Cache-Control': 'no-cache'
+                }
+            });
             if (!response.ok) {
                 throw new Error(`Failed to fetch config.json: ${response.status} ${response.statusText}`);
             }
             
             const rawConfig = await response.json();
+            
+            // Cache the config
+            this.cacheConfig(rawConfig);
             
             // Normalize config to fix common issues
             const normalizedConfig = normalizeConfig(rawConfig);
@@ -884,6 +912,65 @@ class BeeHiveSimulator {
             // Use default config if file doesn't exist
             this.config = this.getDefaultConfig();
             console.log('Using default configuration');
+        }
+    }
+    
+    /**
+     * Get cached config from localStorage
+     * @returns {Object|null}
+     */
+    getCachedConfig() {
+        try {
+            const cached = localStorage.getItem('beehive_config');
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                // Check if cache is recent (less than 1 hour old)
+                if (parsed.timestamp && (Date.now() - parsed.timestamp) < 3600000) {
+                    return parsed.config;
+                }
+            }
+        } catch (error) {
+            console.warn('Failed to read cached config:', error);
+        }
+        return null;
+    }
+    
+    /**
+     * Cache config to localStorage
+     * @param {Object} config - Config to cache
+     */
+    cacheConfig(config) {
+        try {
+            localStorage.setItem('beehive_config', JSON.stringify({
+                config: config,
+                timestamp: Date.now()
+            }));
+        } catch (error) {
+            console.warn('Failed to cache config:', error);
+        }
+    }
+    
+    /**
+     * Fetch config in background to check for updates
+     */
+    async fetchConfigInBackground() {
+        try {
+            const response = await fetch('config.json', {
+                cache: 'no-cache',
+                headers: {
+                    'Cache-Control': 'no-cache'
+                }
+            });
+            if (response.ok) {
+                const rawConfig = await response.json();
+                // Update cache
+                this.cacheConfig(rawConfig);
+                // Optionally notify user of config update
+                console.log('Config updated in background');
+            }
+        } catch (error) {
+            // Silently fail - we have cached config
+            console.debug('Background config fetch failed:', error);
         }
     }
     
@@ -1328,6 +1415,11 @@ class BeeHiveSimulator {
             if (timeSinceLastRender >= targetFrameTime) {
                 this.lastRenderTime = timestamp;
                 
+                // Record frame for performance monitoring
+                if (this.hive && this.hive.performanceMonitor) {
+                    this.hive.performanceMonitor.recordFrame();
+                }
+                
                 // Render with error handling
                 if (this.renderer && this.hive) {
                     try {
@@ -1338,18 +1430,26 @@ class BeeHiveSimulator {
                     }
                 }
                 
-                // Update HUD
-                try {
-                    this.updateHUD();
-                } catch (error) {
-                    console.error('Error updating HUD:', error);
+                // Update HUD (throttle to reduce DOM updates)
+                if (!this.lastHUDUpdate || (timestamp - this.lastHUDUpdate) >= 100) {
+                    // Update HUD at most 10 times per second
+                    try {
+                        this.updateHUD();
+                        this.lastHUDUpdate = timestamp;
+                    } catch (error) {
+                        console.error('Error updating HUD:', error);
+                    }
                 }
                 
-                // Update theme
-                try {
-                    this.updateTheme();
-                } catch (error) {
-                    console.error('Error updating theme:', error);
+                // Update theme (only when needed)
+                const currentHour = this.simulationDate.getHours();
+                if (this.lastThemeCheckHour !== currentHour) {
+                    try {
+                        this.updateTheme();
+                        this.lastThemeCheckHour = currentHour;
+                    } catch (error) {
+                        console.error('Error updating theme:', error);
+                    }
                 }
             }
         } catch (error) {

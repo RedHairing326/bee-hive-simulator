@@ -1,6 +1,7 @@
 // Renderer for drawing the hive on canvas
 
 import { hexToPixel } from './utils.js';
+import { ViewportCuller, DirtyCellTracker } from './performance-optimizer.js';
 
 export class Renderer {
     constructor(canvas, config) {
@@ -10,6 +11,13 @@ export class Renderer {
         this.hexSize = config.grid.hexSize;
         this.offsetX = 0;
         this.offsetY = 0;
+        
+        // Performance optimizations (initialize after setupCanvas sets hexSize)
+        this.viewportCuller = null; // Will be initialized in setupCanvas
+        this.dirtyTracker = new DirtyCellTracker();
+        this.useViewportCulling = true; // Enable by default
+        this.useDirtyTracking = false; // Disabled - bees/cells don't mark themselves dirty yet
+        this.fullRender = true; // Force full render on first frame
         
         this.setupCanvas();
     }
@@ -64,40 +72,188 @@ export class Renderer {
         // Center the grid in the viewport
         this.offsetX = (this.canvas.width - gridWidth) / 2 + hexWidth * 0.5;
         this.offsetY = (this.canvas.height - gridHeight) / 2 + hexHeight * 0.5;
+        
+        // Initialize or update viewport culler
+        if (!this.viewportCuller) {
+            this.viewportCuller = new ViewportCuller(this.hexSize, this.offsetX, this.offsetY);
+        } else {
+            this.viewportCuller.update(this.hexSize, this.offsetX, this.offsetY);
+        }
     }
     
     resize() {
         // Recalculate and resize canvas
         this.setupCanvas();
+        // Force full render after resize
+        this.fullRender = true;
+        this.dirtyTracker.clear();
     }
     
     clear() {
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     }
     
+    /**
+     * Render the hive with performance optimizations
+     * @param {Object} hive - Hive object
+     */
     render(hive) {
-        this.clear();
+        // Reset theme cache for this frame
+        this.lastThemeCheck = undefined;
         
-        // Draw all cells
+        // Initialize viewport culler if not already done
+        if (!this.viewportCuller) {
+            this.viewportCuller = new ViewportCuller(this.hexSize, this.offsetX, this.offsetY);
+        }
+        
+        // Update viewport culler with current settings
+        this.viewportCuller.update(this.hexSize, this.offsetX, this.offsetY);
+        
+        // Always do full render for now (dirty tracking disabled)
+        // TODO: Re-enable dirty tracking once bees/cells mark themselves dirty
+        this.clear();
+        this.renderAll(hive);
+        this.fullRender = false;
+    }
+    
+    /**
+     * Render all cells (full render)
+     * @param {Object} hive - Hive object
+     */
+    renderAll(hive) {
+        if (!hive || !hive.cells) return;
+        
+        const visibleCells = [];
+        const cellsWithBees = [];
+        const movingBees = [];
+        
+        const canvasWidth = this.canvas ? this.canvas.width : window.innerWidth;
+        const canvasHeight = this.canvas ? this.canvas.height : window.innerHeight;
+        
+        // Collect visible cells and bees
         for (const cell of hive.cells.values()) {
+            if (!cell) continue;
+            
+            if (!this.useViewportCulling || !this.viewportCuller ||
+                this.viewportCuller.isVisible(cell, canvasWidth, canvasHeight)) {
+                visibleCells.push(cell);
+                
+                if (cell.occupyingBees && cell.occupyingBees.length > 0 || cell.hasDeadBee()) {
+                    cellsWithBees.push(cell);
+                }
+            }
+        }
+        
+        // Collect moving bees
+        if (hive.bees && Array.isArray(hive.bees)) {
+            for (const bee of hive.bees) {
+                if (!bee || bee.isOutsideHive || bee.moveProgress >= 1.0) continue;
+                
+                // Check if bee is visible
+                const cell = hive.getCell ? hive.getCell(bee.q, bee.r) : null;
+                if (!this.useViewportCulling || !this.viewportCuller ||
+                    !cell || 
+                    this.viewportCuller.isVisible(cell, canvasWidth, canvasHeight)) {
+                    movingBees.push(bee);
+                }
+            }
+        }
+        
+        // Draw visible cells
+        for (const cell of visibleCells) {
             this.drawCell(cell, hive);
         }
         
-        // Draw stationary bees in their cells (grouped in 3x3 grid)
-        // Only draw bees that have fully arrived (moveProgress >= 1.0)
-        for (const cell of hive.cells.values()) {
-            if (cell.occupyingBees.length > 0 || cell.hasDeadBee()) {
-                this.drawBeesInCell(cell);
+        // Draw bees in cells
+        for (const cell of cellsWithBees) {
+            this.drawBeesInCell(cell);
+        }
+        
+        // Draw moving bees
+        for (const bee of movingBees) {
+            this.drawBee(bee);
+        }
+    }
+    
+    /**
+     * Render only dirty cells (incremental render)
+     * @param {Object} hive - Hive object
+     */
+    renderDirty(hive) {
+        if (!hive || !hive.getCell) return;
+        
+        const dirtyCells = this.dirtyTracker.getDirtyCells();
+        const dirtyBees = this.dirtyTracker.getDirtyBees();
+        
+        // Redraw dirty cells
+        for (const cellKey of dirtyCells) {
+            const [q, r] = cellKey.split(',').map(Number);
+            if (isNaN(q) || isNaN(r)) continue;
+            
+            const cell = hive.getCell(q, r);
+            if (cell) {
+                // Clear cell area (approximate)
+                const pos = hexToPixel(cell.q, cell.r, this.hexSize);
+                const x = pos.x + this.offsetX;
+                const y = pos.y + this.offsetY;
+                const hexRadius = this.hexSize * 1.2; // Slightly larger to ensure clean
+                
+                // Clear the area
+                this.ctx.save();
+                this.ctx.beginPath();
+                this.ctx.arc(x, y, hexRadius, 0, Math.PI * 2);
+                this.ctx.clip();
+                this.ctx.clearRect(x - hexRadius, y - hexRadius, hexRadius * 2, hexRadius * 2);
+                this.ctx.restore();
+                
+                // Redraw cell
+                this.drawCell(cell, hive);
+                
+                // Redraw bees in cell
+                if (cell.occupyingBees && cell.occupyingBees.length > 0 || cell.hasDeadBee()) {
+                    this.drawBeesInCell(cell);
+                }
             }
         }
         
-        // Draw moving bees individually at their interpolated positions
-        // Only draw bees that are currently moving (moveProgress < 1.0)
-        for (const bee of hive.bees) {
+        // Redraw dirty moving bees
+        for (const bee of dirtyBees) {
             if (!bee.isOutsideHive && bee.moveProgress < 1.0) {
+                // Clear previous position (if needed)
+                // For simplicity, we'll just redraw
                 this.drawBee(bee);
             }
         }
+        
+        // Clear dirty flags after rendering
+        this.dirtyTracker.clear();
+    }
+    
+    /**
+     * Mark a cell as dirty (needs re-render)
+     * @param {Object} cell - Cell to mark dirty
+     */
+    markDirty(cell) {
+        if (this.useDirtyTracking) {
+            this.dirtyTracker.markDirty(cell);
+        }
+    }
+    
+    /**
+     * Mark a bee as dirty (needs re-render)
+     * @param {Object} bee - Bee to mark dirty
+     */
+    markBeeDirty(bee) {
+        if (this.useDirtyTracking) {
+            this.dirtyTracker.markBeeDirty(bee);
+        }
+    }
+    
+    /**
+     * Force a full render on next frame
+     */
+    forceFullRender() {
+        this.fullRender = true;
     }
     
     drawCell(cell, hive) {
@@ -106,6 +262,12 @@ export class Renderer {
         const y = pos.y + this.offsetY;
         
         const isEntrance = hive && hive.isEntranceCell(cell.q, cell.r);
+        
+        // Cache theme check (only check once per render cycle)
+        if (this.lastThemeCheck === undefined) {
+            this.lastThemeCheck = document.body.classList.contains('dark-mode');
+        }
+        const isDark = this.lastThemeCheck;
         
         // Draw hexagon background (neutral color)
         this.ctx.beginPath();
@@ -123,7 +285,6 @@ export class Renderer {
         this.ctx.closePath();
         
         // Fill with neutral background (theme-aware)
-        const isDark = document.body.classList.contains('dark-mode');
         if (isEntrance) {
             // Entrance cells have a slightly different tint
             this.ctx.fillStyle = isDark ? '#3a3a2a' : '#ffffea';
@@ -137,7 +298,10 @@ export class Renderer {
         // Draw colored hexagonal RING based on cell state
         // This is the main indicator of cell status
         const ringWidth = this.getRingWidth(cell);
-        this.ctx.strokeStyle = cell.getColor();
+        const cellColor = cell.getColor();
+        
+        // Batch stroke operations with same style
+        this.ctx.strokeStyle = cellColor;
         this.ctx.lineWidth = ringWidth;
         this.ctx.stroke();
         

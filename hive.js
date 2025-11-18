@@ -3,6 +3,7 @@
 import { Cell, CellState } from './cell.js';
 import { Bee, BeeType, BeeTask } from './bee.js';
 import { getHexNeighbors, distance, PriorityQueue, getActivityMultiplier, getSeason } from './utils.js';
+import { SpatialGrid, PathfindingCache, UpdateBatcher, PerformanceMonitor } from './performance-optimizer.js';
 
 export class Hive {
     constructor(config) {
@@ -18,6 +19,16 @@ export class Hive {
         this.temperature = 35; // Optimal hive temperature (Celsius)
         this.optimalTemperature = 35;
         this.deadBeeLocations = []; // Track where dead bees are
+        
+        // Performance optimizations
+        this.spatialGrid = new SpatialGrid(10); // Grid cell size for spatial indexing
+        this.pathfindingCache = new PathfindingCache(200); // Cache up to 200 paths
+        this.updateBatcher = new UpdateBatcher(20); // Process 20 updates per batch
+        this.performanceMonitor = new PerformanceMonitor();
+        this.beeUpdateIndex = 0; // For batched bee updates
+        this.cellUpdateIndex = 0; // For batched cell updates
+        // Update all bees every frame for smooth movement (batching was causing bees to not move)
+        this.beeUpdateBatchSize = Infinity; // Update all bees every frame
         
         // Daily summary tracking
         this.dailySummaries = []; // Array of daily summary objects
@@ -35,6 +46,9 @@ export class Hive {
         this.initializeCells();
         this.initializeEntrances();
         this.initializeBees();
+        
+        // Build spatial grid after initialization
+        this.spatialGrid.rebuild(this.cells);
     }
     
     initializeCells() {
@@ -389,33 +403,52 @@ export class Hive {
     }
     
     isEntranceCell(q, r) {
-        return this.entranceCells.some(e => e.q === q && e.r === r);
+        // Optimized: use simple loop instead of .some() for better performance
+        for (const entrance of this.entranceCells) {
+            if (entrance && entrance.q === q && entrance.r === r) {
+                return true;
+            }
+        }
+        return false;
     }
     
     findHungryLarvae() {
-        const hungryLarvae = Array.from(this.cells.values())
-            .filter(c => c.state === CellState.LARVAE_HUNGRY);
+        // Optimized: avoid creating array, find first match
+        const candidates = [];
+        for (const cell of this.cells.values()) {
+            if (cell && cell.state === CellState.LARVAE_HUNGRY) {
+                candidates.push(cell);
+                // Early exit if we have enough candidates
+                if (candidates.length >= 10) break;
+            }
+        }
         
-        if (hungryLarvae.length === 0) return null;
-        const cell = hungryLarvae[Math.floor(Math.random() * hungryLarvae.length)];
+        if (candidates.length === 0) return null;
+        const cell = candidates[Math.floor(Math.random() * candidates.length)];
         return { q: cell.q, r: cell.r };
     }
     
     findFoodForFeeding() {
         // Find food storage cells (honey or pollen) with content
         // Include capped honey as it can be uncapped for feeding
-        const foodCells = Array.from(this.cells.values())
-            .filter(c => 
-                (c.state === CellState.HONEY || 
-                 c.state === CellState.HONEY_COMPLETE || 
-                 c.state === CellState.HONEY_CAPPED ||
-                 c.state === CellState.POLLEN || 
-                 c.state === CellState.BEE_BREAD) &&
-                c.contentAmount > 0.5
-            );
+        // Optimized: avoid creating full array, collect candidates
+        const candidates = [];
+        for (const cell of this.cells.values()) {
+            if (cell && 
+                (cell.state === CellState.HONEY || 
+                 cell.state === CellState.HONEY_COMPLETE || 
+                 cell.state === CellState.HONEY_CAPPED ||
+                 cell.state === CellState.POLLEN || 
+                 cell.state === CellState.BEE_BREAD) &&
+                cell.contentAmount > 0.5) {
+                candidates.push(cell);
+                // Early exit if we have enough options
+                if (candidates.length >= 20) break;
+            }
+        }
         
-        if (foodCells.length === 0) return null;
-        const cell = foodCells[Math.floor(Math.random() * foodCells.length)];
+        if (candidates.length === 0) return null;
+        const cell = candidates[Math.floor(Math.random() * candidates.length)];
         return { q: cell.q, r: cell.r };
     }
     
@@ -480,21 +513,21 @@ export class Hive {
                 }
             }
             
-            // Update cells
-            for (const cell of this.cells.values()) {
-                if (!cell) continue;
-                
-                try {
-                    const result = cell.update(deltaTime);
-                    if (result === 'emerge') {
-                        // New bee emerges from capped brood
-                        this.emergeBee(cell);
-                    }
-                } catch (error) {
-                    console.error('Error updating cell:', error, cell);
-                    // Continue with other cells
+        // Update all cells every frame (batching was causing issues)
+        for (const cell of this.cells.values()) {
+            if (!cell) continue;
+            
+            try {
+                const result = cell.update(deltaTime);
+                if (result === 'emerge') {
+                    // New bee emerges from capped brood
+                    this.emergeBee(cell);
                 }
+            } catch (error) {
+                console.error('Error updating cell:', error, cell);
+                // Continue with other cells
             }
+        }
             
             // Auto-cleanup: Remove any dead bees from entrance cells
             // (They should fall outside the hive automatically)
@@ -506,50 +539,55 @@ export class Hive {
                 }
             }
             
-            // Update bees
-            for (let i = this.bees.length - 1; i >= 0; i--) {
-                const bee = this.bees[i];
-                if (!bee) {
-                    // Remove invalid bee
-                    this.bees.splice(i, 1);
-                    continue;
-                }
-                
-                try {
-                    bee.setSimulationTime(this.simulationTime);
-                    const result = bee.update(deltaTime, this);
+            // Update all bees every frame for smooth movement
+            // (Batching was causing bees to appear frozen)
+            const beesToUpdate = this.bees.length;
+            if (beesToUpdate > 0) {
+                // Update all bees (iterate backwards for safe removal)
+                for (let i = beesToUpdate - 1; i >= 0; i--) {
+                    const bee = this.bees[i];
+                    if (!bee) {
+                        // Remove invalid bee
+                        this.bees.splice(i, 1);
+                        continue;
+                    }
                     
-                    if (result === 'died') {
-                        // Track bee death in daily summary
-                        this.recordBeeDied();
+                    try {
+                        bee.setSimulationTime(this.simulationTime);
+                        const result = bee.update(deltaTime, this);
                         
-                        // Mark location where bee died (always mark it)
-                        const cell = this.getCell(bee.q, bee.r);
-                        if (cell && !bee.isOutsideHive) {
-                            // Don't add dead bees to entrance cells - they fall outside
-                            // Entrances are the boundary, dead bees there are disposed
-                            if (!this.isEntranceCell(bee.q, bee.r)) {
-                                cell.addDeadBee(); // Add the bee that just died
-                                
-                                // If the dying bee was carrying a dead bee, drop it here too
-                                if (bee.hasDeadBee) {
-                                    cell.addDeadBee(); // Add the carried dead bee
+                        if (result === 'died') {
+                            // Track bee death in daily summary
+                            this.recordBeeDied();
+                            
+                            // Mark location where bee died (always mark it)
+                            const cell = this.getCell(bee.q, bee.r);
+                            if (cell && !bee.isOutsideHive) {
+                                // Don't add dead bees to entrance cells - they fall outside
+                                // Entrances are the boundary, dead bees there are disposed
+                                if (!this.isEntranceCell(bee.q, bee.r)) {
+                                    cell.addDeadBee(); // Add the bee that just died
+                                    
+                                    // If the dying bee was carrying a dead bee, drop it here too
+                                    if (bee.hasDeadBee) {
+                                        cell.addDeadBee(); // Add the carried dead bee
+                                    }
                                 }
+                                // If at entrance, both the bee and any carried dead bee fall outside (removed from simulation)
                             }
-                            // If at entrance, both the bee and any carried dead bee fall outside (removed from simulation)
+                            
+                            this.bees.splice(i, 1);
+                            if (bee === this.queen) {
+                                this.queen = null;
+                            }
                         }
-                        
+                    } catch (error) {
+                        console.error('Error updating bee:', error, bee);
+                        // Remove problematic bee to prevent infinite loops
                         this.bees.splice(i, 1);
                         if (bee === this.queen) {
                             this.queen = null;
                         }
-                    }
-                } catch (error) {
-                    console.error('Error updating bee:', error, bee);
-                    // Remove problematic bee to prevent infinite loops
-                    this.bees.splice(i, 1);
-                    if (bee === this.queen) {
-                        this.queen = null;
                     }
                 }
             }
@@ -596,14 +634,18 @@ export class Hive {
         const timeMultiplier = Math.sin((hour - 6) / 24 * Math.PI * 2); // Peak at 2pm
         ambientTemp += timeMultiplier * 5;
         
-        // Temperature regulation by bees
-        const beesRegulating = this.bees.filter(b => 
-            b.task && (b.task === 'temperatureRegulation' || b.task.includes('temperature'))
-        ).length;
+        // Temperature regulation by bees (optimized - count without creating array)
+        let beesRegulating = 0;
+        for (const bee of this.bees) {
+            if (bee && bee.task && (bee.task === 'temperatureRegulation' || bee.task.includes('temperature'))) {
+                beesRegulating++;
+            }
+        }
         const regulationEffect = beesRegulating * 0.1;
         
-        // Population helps maintain temperature
-        const populationEffect = Math.min(this.bees.length * 0.01, 5);
+        // Population helps maintain temperature (cache length to avoid repeated property access)
+        const beeCount = this.bees.length;
+        const populationEffect = Math.min(beeCount * 0.01, 5);
         
         // Gradually move toward ambient, but bees resist
         const targetTemp = this.optimalTemperature;
@@ -682,6 +724,16 @@ export class Hive {
     }
     
     findPath(start, end, preferEmpty = false) {
+        // Check cache first
+        const cached = this.pathfindingCache.get(start, end);
+        if (cached) {
+            // Validate cached path is still valid
+            if (this.validatePath(cached)) {
+                return cached;
+            }
+            // If invalid, cache will be overwritten below
+        }
+        
         const startKey = this.getCellKey(start.q, start.r);
         const endKey = this.getCellKey(end.q, end.r);
         
@@ -751,7 +803,32 @@ export class Hive {
             current = cameFrom.get(currentKey);
         }
         
+        // Cache the path
+        if (path.length > 0) {
+            this.pathfindingCache.set(start, end, path);
+        }
+        
         return path;
+    }
+    
+    /**
+     * Validate that a cached path is still valid
+     * @param {Array} path - Path to validate
+     * @returns {boolean}
+     */
+    validatePath(path) {
+        if (!path || path.length === 0) return false;
+        
+        for (const node of path) {
+            const cell = this.getCell(node.q, node.r);
+            if (!cell) return false;
+            // Check if path is blocked (except destination)
+            if (cell.isFull() && node !== path[path.length - 1]) {
+                return false;
+            }
+        }
+        
+        return true;
     }
     
     recordForagingTrip() {
@@ -889,11 +966,15 @@ export class Hive {
                 }
             }
             
-            // Calculate foraging rate (trips per hour) - filter to last hour
+            // Calculate foraging rate (trips per hour) - optimized count without creating array
             let foragingRate = 0;
             if (this.foragingHistory && this.foragingHistory.length > 0) {
                 const oneHourAgo = this.simulationTime - 3600;
-                foragingRate = this.foragingHistory.filter(t => t > oneHourAgo).length;
+                for (const timestamp of this.foragingHistory) {
+                    if (timestamp > oneHourAgo) {
+                        foragingRate++;
+                    }
+                }
             }
             
             // Count water cells
@@ -919,10 +1000,15 @@ export class Hive {
                 queenMaxAge = this.queen.maxAge || 0;
                 queenEggsTotal = this.queen.eggsLaidTotal || 0;
                 
-                // Calculate eggs laid in last hour (filter history)
+                // Calculate eggs laid in last hour (optimized - count without creating array)
                 if (this.queen.eggsLaidHistory && this.queen.eggsLaidHistory.length > 0) {
                     const oneHourAgo = this.simulationTime - 3600;
-                    queenEggsHour = this.queen.eggsLaidHistory.filter(t => t > oneHourAgo).length;
+                    queenEggsHour = 0;
+                    for (const timestamp of this.queen.eggsLaidHistory) {
+                        if (timestamp > oneHourAgo) {
+                            queenEggsHour++;
+                        }
+                    }
                 } else {
                     queenEggsHour = 0;
                 }
