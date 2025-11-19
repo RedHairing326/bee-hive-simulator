@@ -50,11 +50,11 @@ This document outlines all processing and network performance upgrades implement
 - **Result**: Faster bee movement, especially in crowded hives
 
 ### 5. Spatial Indexing
-**Impact**: Faster neighbor queries
-- Grid-based spatial index for cell lookups
-- Reduces search space for nearby cells
-- Ready for future optimizations (proximity queries, etc.)
-- **Result**: O(1) cell lookups instead of O(n)
+**Impact**: Faster neighbor and bee queries
+- Grid-based spatial index for cell and bee lookups
+- Reduces search space for nearby cells and bees
+- Optimized task assignment (nursing, undertaking, etc.) using spatial queries
+- **Result**: O(1) cell lookups and O(k) bee lookups instead of O(n)
 
 ### 6. Memory Optimizations
 **Impact**: Reduced garbage collection pauses
